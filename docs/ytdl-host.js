@@ -1,4 +1,4 @@
-/* web/ytdl-host.js -- the handwritten browser half of the Glon boundary.
+/* docs/ytdl-host.js -- the handwritten browser half of the Glon boundary.
  *
  * JavaScript responsibilities are limited to browser capabilities Glon cannot
  * perform directly:
@@ -7,15 +7,41 @@
  *   - load each <script type="application/glon"> block into the machine;
  *   - write rendered HTML into [data-glon-id="<handle>"];
  *   - forward clicks on [data-glon-event] to glon_event / glon_event_value;
- *   - perform a rendered [data-glon-request] marker as a POST to a same-origin
- *     path and deliver the reply as an event;
- *   - fetch /status once at boot and deliver it as readiness.
+ *   - perform a rendered [data-glon-request] marker as a request to the
+ *     explicit local API origin and deliver the reply as an event;
+ *   - fetch <api>/status once at boot and deliver it as readiness.
+ *
+ * The API origin is explicit (never assumed same-origin), because the page is
+ * usually served from GitHub Pages.  It defaults to http://127.0.0.1:8000 and
+ * can be overridden with ?api=<origin> or window.YTDL_API, mirroring Live
+ * Translate's ?relay=wss://localhost:8000/audio convention.
  *
  * No URL parsing, status meaning, or download policy lives here.  Glon decides
  * WHAT to request and what the result means; this file only carries bytes.
  */
 (function () {
   "use strict";
+
+  var DEFAULT_API = "http://127.0.0.1:8000";
+  var OFFLINE_MESSAGE =
+    "Local downloader is not running.\n" +
+    "Start it with:\n" +
+    ".venv/bin/python server.py";
+
+  function apiBase() {
+    var override = window.YTDL_API;
+    if (!override && window.location && window.location.search) {
+      override = new URLSearchParams(window.location.search).get("api");
+    }
+    return String(override || DEFAULT_API).replace(/\/+$/, "");
+  }
+
+  var API = apiBase();
+
+  function apiUrl(path) {
+    if (/^https?:\/\//i.test(path)) return path;
+    return API + path;
+  }
 
   var ex = null;
   var dec = new TextDecoder();
@@ -82,7 +108,7 @@
     var event = el.getAttribute("data-glon-request-event") || "request-done";
     var body = (el.textContent || "").trim();
 
-    fetch(path, {
+    fetch(apiUrl(path), {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=UTF-8" },
       body: body
@@ -97,14 +123,14 @@
         var message = data && data.message ? data.message : "Done";
         glonEventValue(event, String(message).slice(0, 200));
       })
-      .catch(function (err) {
+      .catch(function () {
         requestActive = false;
-        glonEventValue(event, ("Request failed: " + err.message).slice(0, 200));
+        glonEventValue(event, OFFLINE_MESSAGE);
       });
   }
 
   function checkStatus() {
-    fetch("/status")
+    fetch(API + "/status")
       .then(function (resp) { return resp.json(); })
       .then(function (s) {
         var parts = [
@@ -115,7 +141,7 @@
         ];
         glonEventValue("readiness", parts.join("  |  "));
       })
-      .catch(function () { glonEvent("ready-failed"); });
+      .catch(function () { glonEventValue("ready-failed", OFFLINE_MESSAGE); });
   }
 
   function boot() {

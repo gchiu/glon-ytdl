@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""build_page.py -- bundle glon/*.glon into web/index.html.
+"""build_page.py -- bundle glon/*.glon into docs/index.html.
 
 The .glon files stay the authoritative source.  This script inlines them into
-web/index.html as two separate <script type="application/glon"> blocks (common
+docs/index.html as two separate <script type="application/glon"> blocks (common
 first, then the app), exactly the shape the browser host loads in order.  The
 source is NOT HTML-escaped: a <script> element's content is raw text, and the
 browser's script.textContent must reach glon_load byte-for-byte.
+
+docs/ is both the folder served locally by server.py and the folder published
+as the static GitHub Pages site (branch master, folder /docs).
 
 Run:  python3 build_page.py
 """
@@ -50,7 +53,7 @@ def main() -> None:
         "</html>\n"
     )
 
-    out = HERE / "web" / "index.html"
+    out = HERE / "docs" / "index.html"
     out.write_text(page, encoding="utf-8")
     print(
         f"wrote {out} "

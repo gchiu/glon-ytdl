@@ -5,14 +5,14 @@
 ;; the /download request.  Rendering is ordinary Glon over the shared view
 ;; dialect in common.glon.
 ;;
-;; The browser host (web/ytdl-host.js) owns only the capability Glon cannot
-;; perform directly: turning a rendered request marker into a POST to a
-;; same-origin endpoint, and fetching /status.  No URL parsing or download
-;; meaning lives in JavaScript.
+;; The browser host (docs/ytdl-host.js) owns only the capability Glon cannot
+;; perform directly: turning a rendered request marker into a request to the
+;; explicit local API origin, and fetching <api>/status.  No URL parsing or
+;; download meaning lives in JavaScript.
 ;;
 ;; Host events (delivered through glon_event / glon_event_value):
 ;;   readiness       runtime readiness summary text
-;;   ready-failed    /status could not be read
+;;   ready-failed    the local service is unreachable (helpful message)
 ;;   download-done   the server's result message
 ;;
 ;; Requires common.glon (emit-* / button / str-eq / mk-string).
@@ -83,7 +83,7 @@ do-event: [
                 render-current
             ] [
                 either = current-event 'ready-failed [
-                    ready-line: "Runtime status unavailable"
+                    ready-line: current-value
                     render-current
                 ] [
                     render-current

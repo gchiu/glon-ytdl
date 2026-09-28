@@ -433,7 +433,7 @@ do-event: [
                 render-current
             ] [
                 either = current-event 'ready-failed [
-                    ready-line: "Runtime status unavailable"
+                    ready-line: current-value
                     render-current
                 ] [
                     render-current

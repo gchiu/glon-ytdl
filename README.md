@@ -1,15 +1,16 @@
 # glon-ytdl
 
-A very small, local proof-of-concept: paste a YouTube URL into a Glon page,
-press **Download**, and a localhost Python server downloads the video with
-[yt-dlp](https://github.com/yt-dlp/yt-dlp), using ffmpeg to merge/convert when
-required.
+A very small proof-of-concept: paste a YouTube URL into a **Glon** page — served
+either locally or from GitHub Pages — press **Download**, and a localhost Python
+server downloads the video with [yt-dlp](https://github.com/yt-dlp/yt-dlp),
+using ffmpeg to merge/convert when required.
 
 Intended for downloading material you own or have permission to save.
 
 ```
-browser / Glon page
-        |  POST /download   (text/plain body = one URL)
+GitHub Pages Glon UI   (https://gchiu.github.io/glon-ytdl/)
+        |  GET  http://127.0.0.1:8000/status     (readiness)
+        |  POST http://127.0.0.1:8000/download   (text/plain body = one URL)
         v
     server.py  (127.0.0.1 only)
         |
@@ -23,8 +24,10 @@ browser / Glon page
     downloads/
 ```
 
-The same Python process also serves the page and its assets from `web/`, so the
-page is same-origin with the API.
+The browser page is served statically from `docs/` (GitHub Pages). It calls the
+loopback service at an **explicit origin** (default `http://127.0.0.1:8000`),
+never an assumed same-origin path. The same `docs/` folder is also served by
+`server.py` for local development.
 
 ## Detected environment
 
@@ -57,9 +60,12 @@ python3 -m venv .venv
 # 3. Run the server.
 .venv/bin/python server.py
 
-# 4. Open the page.
+# 4. Open the local development page.
 #    http://127.0.0.1:8000
 ```
+
+The same page is published to GitHub Pages (below); either UI talks to the same
+local service.
 
 The page shows a readiness line from `GET /status`. A green/complete line means
 the toolchain is ready.
@@ -99,7 +105,7 @@ YouTube changes frequently; keep yt-dlp current:
 
 | Method | Path        | Purpose |
 |--------|-------------|---------|
-| `GET`  | `/`         | The Glon page (`web/index.html`) |
+| `GET`  | `/`         | The Glon page (`docs/index.html`) |
 | `GET`  | `/status`   | `{"yt_dlp": "...", "ffmpeg": bool, "ffprobe": bool, "deno": bool}` |
 | `POST` | `/download` | Body is one YouTube URL; downloads it into `downloads/` and returns `{"ok": bool, "message": "...", "file": "..."}` |
 
@@ -108,6 +114,52 @@ strictly as a URL: yt-dlp is driven through its **Python API**, never a shell,
 and `shell=True` is not used anywhere.
 
 The server binds to **127.0.0.1 only** and is not exposed on the LAN.
+
+## Remote page → local API (the Live Translate pattern)
+
+This is the same shape already used by the sibling Live Translate project: a
+page hosted remotely (there, GitHub Pages ReGlon) talks to a localhost Python
+service via an explicit local origin — Live Translate passes
+`?relay=wss://localhost:8000/audio` and uses a local certificate; here the page
+uses `http://127.0.0.1:8000` and CORS.
+
+- **Explicit origin.** `docs/ytdl-host.js` defaults to
+  `http://127.0.0.1:8000` and never assumes same-origin. Override it with
+  `?api=<origin>` on the page URL, or `window.YTDL_API`.
+- **CORS + preflight.** `server.py` answers `OPTIONS` with `204` and, for an
+  allowed `Origin`, adds `Access-Control-Allow-Origin`,
+  `Access-Control-Allow-Methods`, `Access-Control-Allow-Headers`, and
+  `Access-Control-Allow-Private-Network: true` (Chrome's Private Network Access
+  requires the last one for a public HTTPS page reaching loopback).
+- **Permitted origins.** Only `https://gchiu.github.io`,
+  `http://127.0.0.1:8000` and `http://localhost:8000` by default. Add temporary
+  test origins with `YTDL_ALLOWED_ORIGINS` (comma-separated).
+- **Service not running.** If `GET /status` cannot be reached, the page shows:
+
+      Local downloader is not running.
+      Start it with:
+      .venv/bin/python server.py
+
+  and a download attempt shows the same message.
+
+## GitHub Pages deployment
+
+No build workflow is needed. Publish the static folder directly:
+
+1. Push this repository to `https://github.com/gchiu/glon-ytdl`.
+2. In GitHub: **Settings → Pages → Build and deployment**.
+   - Source: **Deploy from a branch**
+   - Branch: **`master`**, folder: **`/docs`**
+   - Save.
+3. Expected URL: **`https://gchiu.github.io/glon-ytdl/`**
+
+`docs/.nojekyll` disables Jekyll so the files are served verbatim
+(including `glon.wasm`). `docs/index.html` is generated from `glon/*.glon` by
+`build_page.py`; commit the regenerated file when the Glon source changes.
+
+> Mixed-content note: browsers treat `http://127.0.0.1` / `http://localhost` as
+> potentially trustworthy, so an HTTPS Pages page may call the plain-HTTP
+> loopback API.
 
 ## The Glon UI
 
@@ -120,17 +172,20 @@ sibling `rebol-substrate-experiment` repository
 |------|------|
 | `glon/common.glon` | Vendored view dialect + string primitives (`emit-*`, `button`, `str-eq`, `mk-string`) from `rebol-substrate-experiment/demo/shop/common.glon` |
 | `glon/app.glon` | This application: URL/status/readiness state, the view, and the event dispatcher |
-| `web/glon.wasm` | Vendored G1A runtime from `rebol-substrate-experiment/demo/shop/glon.wasm` (exports `glon_init/load/route/event/event_value`) |
-| `web/ytdl-host.js` | Browser host bridge: loads the blocks, writes rendered HTML, forwards events, performs the rendered request, fetches `/status` |
-| `web/index.html` | Generated bundle (do not edit by hand) |
-| `build_page.py` | Bundles `glon/*.glon` into `web/index.html` |
+| `docs/glon.wasm` | Vendored G1A runtime from `rebol-substrate-experiment/demo/shop/glon.wasm` (exports `glon_init/load/route/event/event_value`) |
+| `docs/ytdl-host.js` | Browser host bridge: loads the blocks, writes rendered HTML, forwards events, performs the rendered request against the explicit API origin, fetches `<api>/status` |
+| `docs/index.html` | Generated bundle (do not edit by hand) |
+| `docs/.nojekyll` | Disables Jekyll on GitHub Pages |
+| `build_page.py` | Bundles `glon/*.glon` into `docs/index.html` |
+
+`docs/` is both the local server root and the published GitHub Pages folder.
 
 How the download request crosses the boundary, without any app logic in JS:
 
 1. Glon renders a hidden marker while a download is pending:
    `<span data-glon-request='/download' data-glon-request-event='download-done'>URL</span>`
-2. The host turns the marker into `POST /download` and, when the reply arrives,
-   calls `glon_event_value('download-done', message)`.
+2. The host turns the marker into `POST <api>/download` and, when the reply
+   arrives, calls `glon_event_value('download-done', message)`.
 3. Glon decides what the result means and re-renders.
 
 Rebuild the generated page after editing the `.glon` source:
@@ -149,7 +204,7 @@ the browser loads, and drives the event bridge (no browser needed):
 .venv/bin/python tools/glon_smoke.py
 ```
 
-## Notes and limits (first milestone)
+## Notes and limits
 
 - One download at a time; no auth, database, queue, playlists, or WebSockets.
 - No live progress bar; the status line reads `Downloading...` then the result.

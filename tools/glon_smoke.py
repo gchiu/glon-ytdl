@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tools/glon_smoke.py -- headless verification of the Glon page's application.
 
-Instantiates web/glon.wasm with the page's host imports, loads the same two
+Instantiates docs/glon.wasm with the page's host imports, loads the same two
 `<script type="application/glon">` blocks the browser host loads, then drives
 the real event bridge (glon_event / glon_event_value) and asserts the rendered
 HTML.  The only stubbed parts are the DOM (host_set_html is captured) and the
@@ -23,8 +23,8 @@ except ImportError:
     sys.exit("wasmtime not installed; run: pip install wasmtime")
 
 BASE = pathlib.Path(__file__).resolve().parent.parent
-WASM = BASE / "web" / "glon.wasm"
-INDEX = BASE / "web" / "index.html"
+WASM = BASE / "docs" / "glon.wasm"
+INDEX = BASE / "docs" / "index.html"
 
 html = INDEX.read_text(encoding="utf-8")
 blocks = re.findall(r'<script type="application/glon"[^>]*>(.*?)</script>', html, re.S)
@@ -139,4 +139,13 @@ check("readiness after", page, "ffmpeg MISSING")
 if "data-glon-request" in page:
     sys.exit("FAIL readiness after: stale request marker present")
 
-print("GLON_SMOKE PASS (init / readiness / download request marker / result)")
+offline = (
+    "Local downloader is not running.\n"
+    "Start it with:\n"
+    ".venv/bin/python server.py"
+)
+page = event_value("ready-failed", offline)
+check("ready-failed", page, "Local downloader is not running.",
+      ".venv/bin/python server.py")
+
+print("GLON_SMOKE PASS (init / readiness / download request marker / result / offline)")

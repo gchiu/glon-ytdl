@@ -34,6 +34,7 @@ h1 {
     font-weight: 600;
     margin-bottom: 14px;
     overflow-wrap: anywhere;
+    white-space: pre-line;
 }
 .row {
     display: flex;
@@ -68,6 +69,7 @@ h1 {
     color: #71717a;
     margin-bottom: 10px;
     overflow-wrap: anywhere;
+    white-space: pre-line;
 }
 .error {
     font-size: 13px;
