@@ -85,11 +85,27 @@
     if (rc !== 0) console.error("ytdl-host.js: glon_event('" + token + "') rc=" + rc);
   }
 
+  /* glon_event_value accepts at most 200 BYTES.  String#slice counts UTF-16
+   * code units, so a multibyte message (CJK filenames, emoji) could pass a
+   * 200-"char" cut as far more than 200 bytes and be rejected by the import
+   * (rc=-1), silently dropping the completion event.  Truncate on a real
+   * UTF-8 boundary instead: encode, cut to the byte budget, back up over any
+   * split continuation byte, then decode. */
+  var EVENT_VALUE_MAX_BYTES = 200;
+
+  function clampEventUtf8(value) {
+    var str = String(value == null ? "" : value);
+    var bytes = enc.encode(str);
+    if (bytes.length <= EVENT_VALUE_MAX_BYTES) return str;
+    var end = EVENT_VALUE_MAX_BYTES;
+    while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+    return dec.decode(bytes.subarray(0, end));
+  }
+
   function glonEventValue(token, value) {
     if (typeof ex.glon_event_value !== "function") return;
-    /* glon_event_value caps the value at 200 bytes; keep the boundary honest. */
     var t = alloc(token);
-    var v = alloc(String(value == null ? "" : value).slice(0, 200));
+    var v = alloc(clampEventUtf8(value));
     var rc = ex.glon_event_value(t[0], t[1], v[0], v[1]);
     if (rc !== 0) console.error("ytdl-host.js: glon_event_value('" + token + "') rc=" + rc);
   }
@@ -121,7 +137,7 @@
       .then(function (data) {
         requestActive = false;
         var message = data && data.message ? data.message : "Done";
-        glonEventValue(event, String(message).slice(0, 200));
+        glonEventValue(event, message);
       })
       .catch(function () {
         requestActive = false;
