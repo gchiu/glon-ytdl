@@ -36,20 +36,23 @@ h1 {
     overflow-wrap: anywhere;
     white-space: pre-line;
 }
-.row {
-    display: flex;
-    gap: 10px;
-    margin-bottom: 14px;
-}
 .url {
-    flex: 1 1 auto;
-    min-width: 0;
+    width: 100%;
     padding: 12px 14px;
+    margin-bottom: 12px;
     font-size: 15px;
     border: 1px solid #d4d4d8;
     border-radius: 10px;
 }
 .url:focus { outline: 2px solid #a1a1aa; }
+.actions {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+.actions .btn { flex: 1 1 auto; }
+.actions .btn:first-of-type { background: #dc2626; }
+.actions .btn:first-of-type:hover { background: #b91c1c; }
 .btn {
     appearance: none;
     flex: 0 0 auto;

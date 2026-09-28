@@ -4,7 +4,7 @@
 The server is deliberately small:
 
     browser / Glon page
-            |  POST /download   (text/plain body = one URL)
+            |  POST /download?mode=audio|video   (text/plain body = one URL)
             v
         this server (127.0.0.1 only)
             |
@@ -117,9 +117,12 @@ ALLOWED_HOSTS = {
     "youtu.be",
 }
 
-# A sensible quality preference: best video + best audio, merged into MP4 where
-# the codecs permit a remux.  yt-dlp falls back to a single combined stream.
-FORMAT = "bv*+ba/b"
+# Video: best video + best audio, merged into MP4 where the codecs permit a
+# remux.  yt-dlp falls back to a single combined stream.
+VIDEO_FORMAT = "bv*+ba/b"
+# Audio: the best audio-only stream, downloaded as-is so the source codec and
+# quality are preserved with no lossy transcode and no ffmpeg step.
+AUDIO_FORMAT = "bestaudio"
 
 
 def is_youtube_url(text: str) -> bool:
@@ -164,8 +167,17 @@ def status():
 
 @app.post("/download")
 def download():
-    """Download one URL (the raw request body) into downloads/."""
+    """Download one URL (the raw request body) into downloads/.
+
+    The mode is an explicit query parameter: ?mode=audio (best audio-only
+    stream, preserved as-is) or ?mode=video (the existing best video+audio
+    merge).  Absent mode defaults to video, matching the previous API.
+    """
     url = (request.get_data(as_text=True) or "").strip()
+    mode = (request.args.get("mode") or "video").strip().lower()
+
+    if mode not in ("audio", "video"):
+        return jsonify({"ok": False, "message": "Unknown download mode."})
 
     if not is_youtube_url(url):
         return jsonify(
@@ -173,14 +185,15 @@ def download():
         )
 
     ydl_opts = {
-        "format": FORMAT,
-        "merge_output_format": "mp4",
+        "format": AUDIO_FORMAT if mode == "audio" else VIDEO_FORMAT,
         "outtmpl": str(DOWNLOADS / "%(title)s [%(id)s].%(ext)s"),
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
     }
+    if mode == "video":
+        ydl_opts["merge_output_format"] = "mp4"
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -195,16 +208,16 @@ def download():
 
         name = os.path.basename(path) if path else "download"
         return jsonify(
-            {"ok": True, "message": f"Saved: {name}", "file": name}
+            {"ok": True, "message": f"Saved {mode}: {name}", "file": name}
         )
 
     except yt_dlp.utils.DownloadError as exc:
         # yt-dlp error text can be long; the page has a 200-byte display cap.
         return jsonify(
-            {"ok": False, "message": f"Download failed: {str(exc)[:150]}"}
+            {"ok": False, "message": f"{mode.capitalize()} download failed: {str(exc)[:120]}"}
         )
     except Exception as exc:  # pragma: no cover - defensive
-        return jsonify({"ok": False, "message": f"Error: {str(exc)[:150]}"})
+        return jsonify({"ok": False, "message": f"{mode.capitalize()} error: {str(exc)[:120]}"})
 
 
 if __name__ == "__main__":

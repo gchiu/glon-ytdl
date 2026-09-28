@@ -1,9 +1,9 @@
 ;; glon/app.glon -- the Glon application for the local yt-dlp downloader.
 ;;
-;; Glon owns the application: the URL state, the status line, the runtime
-;; readiness line, the error line, and the decision to ask the host to perform
-;; the /download request.  Rendering is ordinary Glon over the shared view
-;; dialect in common.glon.
+;; Glon owns the application: the URL state, the chosen mode (audio/video), the
+;; status line, the runtime readiness line, the error line, and the decision to
+;; ask the host to perform the /download request.  Rendering is ordinary Glon
+;; over the shared view dialect in common.glon.
 ;;
 ;; The browser host (docs/ytdl-host.js) owns only the capability Glon cannot
 ;; perform directly: turning a rendered request marker into a request to the
@@ -11,19 +11,33 @@
 ;; download meaning lives in JavaScript.
 ;;
 ;; Host events (delivered through glon_event / glon_event_value):
+;;   download-audio  a download was requested in audio mode (value = URL)
+;;   download-video  a download was requested in video mode (value = URL)
 ;;   readiness       runtime readiness summary text
 ;;   ready-failed    the local service is unreachable (helpful message)
 ;;   download-done   the server's result message
 ;;
-;; Requires common.glon (emit-* / button / str-eq / mk-string).
+;; Requires common.glon (emit-* / str-eq / mk-string).
 
 [
 status-text: "Ready"
 ready-line: none
 error-text: none
 pending-url: ""
+pending-mode: "audio"
 
 ;; ---- view -----------------------------------------------------------------
+
+;; A button that fires an event and reads the single URL input, so both actions
+;; share one field.  This is ordinary Glon emitting host-understood attributes;
+;; it is not JavaScript.
+mode-button: func [content event] [
+    emit-text "<button class='btn' data-glon-event='"
+    emit-text event
+    emit-text "' data-glon-input='download'>"
+    do content
+    emit-text "</button>"
+]
 
 render-page: [
     emit-text "<div class='console'>"
@@ -34,9 +48,11 @@ render-page: [
     emit-text status-text
     emit-text "</div>"
 
-    emit-text "<div class='row'>"
     emit-text "<input class='url' type='text' placeholder='Paste a YouTube URL' data-glon-input='download'>"
-    button [ emit-text "Download" ] "download"
+
+    emit-text "<div class='actions'>"
+    mode-button [ emit-text "Download audio" ] "download-audio"
+    mode-button [ emit-text "Download video" ] "download-video"
     emit-text "</div>"
 
     emit-text "<div class='ready'>"
@@ -49,13 +65,19 @@ render-page: [
         emit-text "</div>"
     ] [ none ]
 
-    ;; Outstanding host request.  Emitted only while a download is pending;
-    ;; the host turns this marker into a POST /download and clears it once the
-    ;; result event arrives (pending-url is reset in the download-done branch).
+    ;; Outstanding host request.  Emitted only while a download is pending; the
+    ;; host turns this marker into POST <api>/download?mode=... and clears it
+    ;; once the result event arrives (pending-url is reset in download-done).
     either str-eq pending-url "" [ none ] [
-        emit-text "<span style='display:none' data-glon-request='/download' data-glon-request-event='download-done'>"
-        emit-text pending-url
-        emit-text "</span>"
+        either str-eq pending-mode "audio" [
+            emit-text "<span style='display:none' data-glon-request='/download?mode=audio' data-glon-request-event='download-done'>"
+            emit-text pending-url
+            emit-text "</span>"
+        ] [
+            emit-text "<span style='display:none' data-glon-request='/download?mode=video' data-glon-request-event='download-done'>"
+            emit-text pending-url
+            emit-text "</span>"
+        ]
     ]
 
     emit-text "<div class='foot'>bound to 127.0.0.1</div>"
@@ -67,26 +89,35 @@ render-current: func [] [ emit-clear do render-page emit-finish ]
 ;; ---- events ---------------------------------------------------------------
 
 do-event: [
-    either = current-event 'download [
+    either = current-event 'download-audio [
         pending-url: current-value
-        status-text: "Downloading..."
+        pending-mode: "audio"
+        status-text: "Requesting audio download..."
         error-text: none
         render-current
     ] [
-        either = current-event 'download-done [
-            status-text: current-value
-            pending-url: ""
+        either = current-event 'download-video [
+            pending-url: current-value
+            pending-mode: "video"
+            status-text: "Requesting video download..."
+            error-text: none
             render-current
         ] [
-            either = current-event 'readiness [
-                ready-line: current-value
+            either = current-event 'download-done [
+                status-text: current-value
+                pending-url: ""
                 render-current
             ] [
-                either = current-event 'ready-failed [
+                either = current-event 'readiness [
                     ready-line: current-value
                     render-current
                 ] [
-                    render-current
+                    either = current-event 'ready-failed [
+                        ready-line: current-value
+                        render-current
+                    ] [
+                        render-current
+                    ]
                 ]
             ]
         ]

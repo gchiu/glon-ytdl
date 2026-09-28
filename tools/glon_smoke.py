@@ -118,19 +118,27 @@ load(blocks[1])  # app
 
 page = event("init")
 check("init", page, "Local YouTube Download", "Paste a YouTube URL",
-      "data-glon-input='download'", "data-glon-event='download'",
+      "data-glon-input='download'",
+      "data-glon-event='download-audio'", "Download audio",
+      "data-glon-event='download-video'", "Download video",
       "Checking runtime...")
 
 page = event_value("readiness", "yt-dlp 2026.08.19  |  ffmpeg  |  ffprobe  |  deno absent")
 check("readiness", page, "yt-dlp 2026.08.19")
 
-page = event_value("download", "https://www.youtube.com/watch?v=abcdefghijk")
-check("download", page, "Downloading...", "data-glon-request='/download'",
-      "data-glon-request-event='download-done'",
-      "https://www.youtube.com/watch?v=abcdefghijk")
+url = "https://www.youtube.com/watch?v=abcdefghijk"
+page = event_value("download-audio", url)
+check("download-audio", page, "Requesting audio download...",
+      "data-glon-request='/download?mode=audio'",
+      "data-glon-request-event='download-done'", url)
 
-page = event_value("download-done", "Saved: clip [abcdefghijk].mp4")
-check("download-done", page, "Saved: clip [abcdefghijk].mp4")
+page = event_value("download-video", url)
+check("download-video", page, "Requesting video download...",
+      "data-glon-request='/download?mode=video'",
+      "data-glon-request-event='download-done'", url)
+
+page = event_value("download-done", "Saved audio: clip [abcdefghijk].webm")
+check("download-done", page, "Saved audio: clip [abcdefghijk].webm")
 if "data-glon-request" in page:
     sys.exit("FAIL download-done: request marker was not cleared")
 
@@ -148,4 +156,4 @@ page = event_value("ready-failed", offline)
 check("ready-failed", page, "Local downloader is not running.",
       ".venv/bin/python server.py")
 
-print("GLON_SMOKE PASS (init / readiness / download request marker / result / offline)")
+print("GLON_SMOKE PASS (init / readiness / audio+video request markers / result / offline)")

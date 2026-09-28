@@ -1,16 +1,18 @@
 # glon-ytdl
 
 A very small proof-of-concept: paste a YouTube URL into a **Glon** page — served
-either locally or from GitHub Pages — press **Download**, and a localhost Python
-server downloads the video with [yt-dlp](https://github.com/yt-dlp/yt-dlp),
-using ffmpeg to merge/convert when required.
+either locally or from GitHub Pages — choose **Download audio** (the default,
+primary action) or **Download video**, and a localhost Python server fetches it
+with [yt-dlp](https://github.com/yt-dlp/yt-dlp), using ffmpeg to merge/convert
+when required.
 
 Intended for downloading material you own or have permission to save.
 
 ```
 GitHub Pages Glon UI   (https://gchiu.github.io/glon-ytdl/)
-        |  GET  http://127.0.0.1:8000/status     (readiness)
-        |  POST http://127.0.0.1:8000/download   (text/plain body = one URL)
+        |  GET  http://127.0.0.1:8000/status          (readiness)
+        |  POST http://127.0.0.1:8000/download?mode=audio|video
+        |       (text/plain body = one URL)
         v
     server.py  (127.0.0.1 only)
         |
@@ -107,7 +109,19 @@ YouTube changes frequently; keep yt-dlp current:
 |--------|-------------|---------|
 | `GET`  | `/`         | The Glon page (`docs/index.html`) |
 | `GET`  | `/status`   | `{"yt_dlp": "...", "ffmpeg": bool, "ffprobe": bool, "deno": bool}` |
-| `POST` | `/download` | Body is one YouTube URL; downloads it into `downloads/` and returns `{"ok": bool, "message": "...", "file": "..."}` |
+| `POST` | `/download?mode=audio` | Best audio-only stream, preserved as-is (no transcode) |
+| `POST` | `/download?mode=video` | Best video + audio, merged to MP4 where possible |
+
+The `POST` body is one YouTube URL. `mode` defaults to `video` if omitted, so
+the previous single-purpose API still works.
+
+yt-dlp options per mode:
+
+- **audio** — `format = "bestaudio"`: the best audio-only stream, downloaded
+  unchanged (e.g. Opus/WebM), so the source codec/quality is preserved and no
+  lossy transcode or ffmpeg step is needed.
+- **video** — `format = "bv*+ba/b"` with `merge_output_format = "mp4"`: best
+  video + best audio, merged to MP4 where the codecs permit a remux.
 
 Only `youtube.com` / `youtu.be` hosts are accepted. The request body is parsed
 strictly as a URL: yt-dlp is driven through its **Python API**, never a shell,
@@ -184,8 +198,8 @@ How the download request crosses the boundary, without any app logic in JS:
 
 1. Glon renders a hidden marker while a download is pending:
    `<span data-glon-request='/download' data-glon-request-event='download-done'>URL</span>`
-2. The host turns the marker into `POST <api>/download` and, when the reply
-   arrives, calls `glon_event_value('download-done', message)`.
+2. The host turns the marker into `POST <api>/download?mode=audio|video` and,
+   when the reply arrives, calls `glon_event_value('download-done', message)`.
 3. Glon decides what the result means and re-renders.
 
 Rebuild the generated page after editing the `.glon` source:

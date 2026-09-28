@@ -164,8 +164,17 @@
       if (!el) return;
       e.preventDefault();
       var token = el.getAttribute("data-glon-event");
-      var input = document.querySelector('[data-glon-input="' + token + '"]');
-      if (input && input.value !== undefined) glonEventValue(token, input.value);
+      var value = null;
+      if (el.hasAttribute("data-glon-value")) {
+        value = el.getAttribute("data-glon-value");
+      } else {
+        /* An event element may name the input it reads from with
+         * data-glon-input; otherwise the event token names it. */
+        var inputName = el.getAttribute("data-glon-input") || token;
+        var input = document.querySelector('[data-glon-input="' + inputName + '"]');
+        if (input && input.value !== undefined) value = input.value;
+      }
+      if (value !== null) glonEventValue(token, value);
       else glonEvent(token);
     });
 
