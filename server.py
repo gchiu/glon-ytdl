@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""server.py -- a tiny local yt-dlp download server for the Glon page.
+
+The server is deliberately small:
+
+    browser / Glon page
+            |  POST /download   (text/plain body = one URL)
+            v
+        this server (127.0.0.1 only)
+            |
+            v
+          yt-dlp (Python API)
+            |
+            v
+          ffmpeg (merge / remux)
+            |
+            v
+        downloads/
+
+It also serves the page and its assets from web/ so everything is same-origin.
+
+Security choices:
+  * binds to 127.0.0.1 only -- never exposed on the LAN;
+  * the request body is treated strictly as a URL (parsed and allow-listed),
+    never as command-line text;
+  * yt-dlp is invoked through its Python API, never a shell, so shell=True is
+    not used anywhere.
+"""
+
+import os
+import shutil
+import sys
+from pathlib import Path
+from urllib.parse import urlparse
+
+from flask import Flask, jsonify, request, send_from_directory
+
+BASE = Path(__file__).resolve().parent
+WEB = BASE / "web"
+DOWNLOADS = BASE / "downloads"
+DOWNLOADS.mkdir(exist_ok=True)
+
+
+def ensure_ffmpeg() -> None:
+    """Make ffmpeg/ffprobe discoverable.
+
+    If the system has no ffmpeg, the `static-ffmpeg` package (a declared
+    requirement) provides self-contained Linux binaries and prepends them to
+    PATH.  The first call downloads them, which needs network once.
+    """
+    if shutil.which("ffmpeg") and shutil.which("ffprobe"):
+        return
+    try:
+        import static_ffmpeg
+
+        static_ffmpeg.add_paths()
+    except Exception as exc:  # pragma: no cover - best effort only
+        print(f"server: could not provision static ffmpeg: {exc}", file=sys.stderr)
+
+
+ensure_ffmpeg()
+
+import yt_dlp  # noqa: E402  (import after ffmpeg PATH setup)
+
+app = Flask(__name__)
+
+# The milestone is an explicit YouTube downloader; allow-list YouTube hosts.
+ALLOWED_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtu.be",
+}
+
+# A sensible quality preference: best video + best audio, merged into MP4 where
+# the codecs permit a remux.  yt-dlp falls back to a single combined stream.
+FORMAT = "bv*+ba/b"
+
+
+def is_youtube_url(text: str) -> bool:
+    try:
+        parsed = urlparse(text.strip())
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").lower()
+    return host in ALLOWED_HOSTS or host.endswith(".youtube.com")
+
+
+def tool_version_flag(name: str) -> bool:
+    return shutil.which(name) is not None
+
+
+@app.get("/")
+def index():
+    return send_from_directory(WEB, "index.html")
+
+
+@app.get("/<path:filename>")
+def static_files(filename: str):
+    return send_from_directory(WEB, filename)
+
+
+@app.get("/status")
+def status():
+    """Report whether the important runtime pieces are available."""
+    return jsonify(
+        {
+            "yt_dlp": yt_dlp.version.__version__,
+            "ffmpeg": tool_version_flag("ffmpeg"),
+            "ffprobe": tool_version_flag("ffprobe"),
+            # yt-dlp 2026.x defaults to Deno as its JavaScript runtime for
+            # YouTube support; report it because it is recommended, not required.
+            "deno": tool_version_flag("deno"),
+        }
+    )
+
+
+@app.post("/download")
+def download():
+    """Download one URL (the raw request body) into downloads/."""
+    url = (request.get_data(as_text=True) or "").strip()
+
+    if not is_youtube_url(url):
+        return jsonify(
+            {"ok": False, "message": "Please paste a valid YouTube URL."}
+        )
+
+    ydl_opts = {
+        "format": FORMAT,
+        "merge_output_format": "mp4",
+        "outtmpl": str(DOWNLOADS / "%(title)s [%(id)s].%(ext)s"),
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+
+        path = None
+        requested = info.get("requested_downloads") or []
+        if requested:
+            path = requested[0].get("filepath")
+        if not path:
+            path = ydl.prepare_filename(info)
+
+        name = os.path.basename(path) if path else "download"
+        return jsonify(
+            {"ok": True, "message": f"Saved: {name}", "file": name}
+        )
+
+    except yt_dlp.utils.DownloadError as exc:
+        # yt-dlp error text can be long; the page has a 200-byte display cap.
+        return jsonify(
+            {"ok": False, "message": f"Download failed: {str(exc)[:150]}"}
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        return jsonify({"ok": False, "message": f"Error: {str(exc)[:150]}"})
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", "8000"))
+    # 127.0.0.1 only: never bound to the LAN.
+    app.run(host="127.0.0.1", port=port, threaded=True)

@@ -1,0 +1,11 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Downloaded media (the directory is kept via .gitkeep)
+downloads/*
+!downloads/.gitkeep
+
+# Local junk
+*.log

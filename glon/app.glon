@@ -1,0 +1,96 @@
+;; glon/app.glon -- the Glon application for the local yt-dlp downloader.
+;;
+;; Glon owns the application: the URL state, the status line, the runtime
+;; readiness line, the error line, and the decision to ask the host to perform
+;; the /download request.  Rendering is ordinary Glon over the shared view
+;; dialect in common.glon.
+;;
+;; The browser host (web/ytdl-host.js) owns only the capability Glon cannot
+;; perform directly: turning a rendered request marker into a POST to a
+;; same-origin endpoint, and fetching /status.  No URL parsing or download
+;; meaning lives in JavaScript.
+;;
+;; Host events (delivered through glon_event / glon_event_value):
+;;   readiness       runtime readiness summary text
+;;   ready-failed    /status could not be read
+;;   download-done   the server's result message
+;;
+;; Requires common.glon (emit-* / button / str-eq / mk-string).
+
+[
+status-text: "Ready"
+ready-line: none
+error-text: none
+pending-url: ""
+
+;; ---- view -----------------------------------------------------------------
+
+render-page: [
+    emit-text "<div class='console'>"
+    emit-text "<div class='brand'>GLON / YT-DLP</div>"
+    emit-text "<h1>Local YouTube Download</h1>"
+
+    emit-text "<div class='status'>"
+    emit-text status-text
+    emit-text "</div>"
+
+    emit-text "<div class='row'>"
+    emit-text "<input class='url' type='text' placeholder='Paste a YouTube URL' data-glon-input='download'>"
+    button [ emit-text "Download" ] "download"
+    emit-text "</div>"
+
+    emit-text "<div class='ready'>"
+    either ready-line [ emit-text ready-line ] [ emit-text "Checking runtime..." ]
+    emit-text "</div>"
+
+    either error-text [
+        emit-text "<div class='error'>"
+        emit-text error-text
+        emit-text "</div>"
+    ] [ none ]
+
+    ;; Outstanding host request.  Emitted only while a download is pending;
+    ;; the host turns this marker into a POST /download and clears it once the
+    ;; result event arrives (pending-url is reset in the download-done branch).
+    either str-eq pending-url "" [ none ] [
+        emit-text "<span style='display:none' data-glon-request='/download' data-glon-request-event='download-done'>"
+        emit-text pending-url
+        emit-text "</span>"
+    ]
+
+    emit-text "<div class='foot'>bound to 127.0.0.1</div>"
+    emit-text "</div>"
+]
+
+render-current: func [] [ emit-clear do render-page emit-finish ]
+
+;; ---- events ---------------------------------------------------------------
+
+do-event: [
+    either = current-event 'download [
+        pending-url: current-value
+        status-text: "Downloading..."
+        error-text: none
+        render-current
+    ] [
+        either = current-event 'download-done [
+            status-text: current-value
+            pending-url: ""
+            render-current
+        ] [
+            either = current-event 'readiness [
+                ready-line: current-value
+                render-current
+            ] [
+                either = current-event 'ready-failed [
+                    ready-line: "Runtime status unavailable"
+                    render-current
+                ] [
+                    render-current
+                ]
+            ]
+        ]
+    ]
+]
+
+]
