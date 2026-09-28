@@ -110,6 +110,13 @@ def check(name, page, *needles):
             sys.exit(f"FAIL {name}: missing {needle!r}\n--- page ---\n{page}")
 
 
+def check_url(name, page, url):
+    """The URL <input> must re-render with the given value (URL retention)."""
+    needle = "value='" + url + "'"
+    if needle not in page:
+        sys.exit(f"FAIL {name}: url not retained, missing {needle!r}\n--- page ---\n{page}")
+
+
 if call("glon_init") != 0:
     sys.exit("glon_init failed")
 
@@ -122,6 +129,7 @@ check("init", page, "Local YouTube Download", "Paste a YouTube URL",
       "data-glon-event='download-audio'", "Download audio",
       "data-glon-event='download-video'", "Download video",
       "Checking runtime...")
+check_url("init", page, "")
 
 page = event_value("readiness", "yt-dlp 2026.08.19  |  ffmpeg  |  ffprobe  |  deno absent")
 check("readiness", page, "yt-dlp 2026.08.19")
@@ -131,19 +139,23 @@ page = event_value("download-audio", url)
 check("download-audio", page, "Requesting audio download...",
       "data-glon-request='/download?mode=audio'",
       "data-glon-request-event='download-done'", url)
+check_url("download-audio retains url", page, url)
 
 page = event_value("download-video", url)
 check("download-video", page, "Requesting video download...",
       "data-glon-request='/download?mode=video'",
       "data-glon-request-event='download-done'", url)
+check_url("download-video retains url", page, url)
 
 page = event_value("download-done", "Saved audio: clip [abcdefghijk].webm")
 check("download-done", page, "Saved audio: clip [abcdefghijk].webm")
+check_url("download-done retains url", page, url)
 if "data-glon-request" in page:
     sys.exit("FAIL download-done: request marker was not cleared")
 
 page = event_value("readiness", "yt-dlp 2026.08.19  |  ffmpeg MISSING")
 check("readiness after", page, "ffmpeg MISSING")
+check_url("readiness retains url", page, url)
 if "data-glon-request" in page:
     sys.exit("FAIL readiness after: stale request marker present")
 
@@ -155,5 +167,7 @@ offline = (
 page = event_value("ready-failed", offline)
 check("ready-failed", page, "Local downloader is not running.",
       ".venv/bin/python server.py")
+check_url("ready-failed retains url", page, url)
 
-print("GLON_SMOKE PASS (init / readiness / audio+video request markers / result / offline)")
+print("GLON_SMOKE PASS (init / readiness / url retention / "
+      "audio+video request markers / result / offline)")

@@ -23,6 +23,7 @@
 status-text: "Ready"
 ready-line: none
 error-text: none
+url-text: ""
 pending-url: ""
 pending-mode: "audio"
 
@@ -48,7 +49,12 @@ render-page: [
     emit-text status-text
     emit-text "</div>"
 
-    emit-text "<input class='url' type='text' placeholder='Paste a YouTube URL' data-glon-input='download'>"
+    ;; Re-emit the current URL as the input's value so a re-render (any event)
+    ;; does not discard what the user typed/selected.  url-text is updated from
+    ;; an action's event value, and survives success/failure.
+    emit-text "<input class='url' type='text' placeholder='Paste a YouTube URL' value='"
+    emit-text url-text
+    emit-text "' data-glon-input='download'>"
 
     emit-text "<div class='actions'>"
     mode-button [ emit-text "Download audio" ] "download-audio"
@@ -92,6 +98,7 @@ do-event: [
     either = current-event 'download-audio [
         pending-url: current-value
         pending-mode: "audio"
+        url-text: current-value
         status-text: "Requesting audio download..."
         error-text: none
         render-current
@@ -99,6 +106,7 @@ do-event: [
         either = current-event 'download-video [
             pending-url: current-value
             pending-mode: "video"
+            url-text: current-value
             status-text: "Requesting video download..."
             error-text: none
             render-current

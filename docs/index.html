@@ -373,6 +373,7 @@ emit-product-at: func [items i n] [
 status-text: "Ready"
 ready-line: none
 error-text: none
+url-text: ""
 pending-url: ""
 pending-mode: "audio"
 
@@ -398,7 +399,12 @@ render-page: [
     emit-text status-text
     emit-text "</div>"
 
-    emit-text "<input class='url' type='text' placeholder='Paste a YouTube URL' data-glon-input='download'>"
+    
+    
+    
+    emit-text "<input class='url' type='text' placeholder='Paste a YouTube URL' value='"
+    emit-text url-text
+    emit-text "' data-glon-input='download'>"
 
     emit-text "<div class='actions'>"
     mode-button [ emit-text "Download audio" ] "download-audio"
@@ -442,6 +448,7 @@ do-event: [
     either = current-event 'download-audio [
         pending-url: current-value
         pending-mode: "audio"
+        url-text: current-value
         status-text: "Requesting audio download..."
         error-text: none
         render-current
@@ -449,6 +456,7 @@ do-event: [
         either = current-event 'download-video [
             pending-url: current-value
             pending-mode: "video"
+            url-text: current-value
             status-text: "Requesting video download..."
             error-text: none
             render-current
