@@ -36,33 +36,44 @@ never an assumed same-origin path. The same `docs/` folder is also served by
 This repository was developed in **WSL2 (Ubuntu 22.04)**, which is the supported
 setup below:
 
-- Python 3.10 (`/usr/bin/python3`)
-- `yt-dlp`, `ffmpeg`, `ffprobe`: **not** installed in WSL initially
-- `deno`: **not** installed in WSL
+- **Ubuntu's system Python stays 3.10.12** (`/usr/bin/python3`); do not replace
+  it.
+- This project's `.venv` was recreated with **`/usr/bin/python3.11`**
+  (`3.11.0rc1`, the version Ubuntu 22.04 currently provides from the configured
+  Ubuntu repositories).
+- Under that venv, yt-dlp 2026.08.19 no longer prints its Python 3.10
+  deprecation warning.
+- `yt-dlp`, `ffmpeg`, `ffprobe`: **not** installed in WSL initially (yt-dlp comes
+  from `requirements.txt`; `static-ffmpeg` supplies ffmpeg/ffprobe).
+- `deno`: **not** installed in WSL.
 - The Windows host *does* have `yt-dlp.exe`, `ffmpeg.exe`, `ffprobe.exe` and
   `deno.exe` (via WinGet), but this project uses the Linux/WSL tools so the
   server and its subprocesses stay in one environment.
 
-> yt-dlp 2026.x prints a deprecation warning on Python 3.10. It still works
-> (the download above succeeded), but Python 3.11+ is recommended for yt-dlp.
-
 ## Quick start (WSL / Linux)
 
-```bash
-# 1. Create a virtual environment.
-#    On a fresh Ubuntu, `python3 -m venv` needs the venv module:
-sudo apt-get install -y python3.10-venv      # once, if missing
-python3 -m venv .venv
-#    If you cannot use sudo, virtualenv works without it:
-#    python3 -m pip install --user virtualenv && python3 -m virtualenv .venv
+The project `.venv` runs Python 3.11 (see **Detected environment**); Ubuntu's
+system `python3` stays 3.10.12 and is left untouched.
 
-# 2. Install Python requirements (yt-dlp, Flask, static-ffmpeg).
+```bash
+# 1. Install the Python 3.11 interpreter + venv module. Ubuntu 22.04 provides
+#    python3.11 from its configured repositories; no PPA and no system-Python
+#    replacement is needed.
+sudo apt-get install -y python3.11 python3.11-venv
+
+# 2. Create the project virtual environment with that interpreter.
+python3.11 -m venv .venv
+#    If `python3.11 -m venv` is unavailable (venv module missing) and you cannot
+#    use sudo, virtualenv works without it:
+#    python3.11 -m pip install --user virtualenv && python3.11 -m virtualenv .venv
+
+# 3. Install Python requirements (yt-dlp, Flask, static-ffmpeg).
 .venv/bin/pip install -r requirements.txt
 
-# 3. Run the server.
+# 4. Run the server.
 .venv/bin/python server.py
 
-# 4. Open the local development page.
+# 5. Open the local development page.
 #    http://127.0.0.1:8000
 ```
 
@@ -156,6 +167,24 @@ uses `http://127.0.0.1:8000` and CORS.
 
   and a download attempt shows the same message.
 
+## WSL localhost troubleshooting
+
+If `http://127.0.0.1:8000` works inside WSL but Windows (or a browser on
+Windows) cannot reach `localhost:8000`, check for stale Windows port proxies:
+
+```powershell
+netsh interface portproxy show all
+```
+
+An old manual portproxy on port 8000 can interfere with normal WSL localhost
+forwarding. In this project the problem was exactly that: an old rule listening
+on Windows `0.0.0.0:8000` and forwarding to the WSL VM address while the Python
+helper was bound only to `127.0.0.1` inside WSL. After deleting the stale
+portproxy and restarting WSL, normal Windows↔WSL localhost forwarding worked.
+
+Do **not** "fix" this by binding the helper to `0.0.0.0`; the helper must keep
+binding to **127.0.0.1 only**.
+
 ## GitHub Pages deployment
 
 No build workflow is needed. Publish the static folder directly:
@@ -208,22 +237,42 @@ Rebuild the generated page after editing the `.glon` source:
 .venv/bin/python build_page.py
 ```
 
-### Headless verification
+### Headless / bridge testing
 
-`tools/glon_smoke.py` instantiates the real `glon.wasm`, loads the same blocks
-the browser loads, and drives the event bridge (no browser needed):
+Two complementary tests, both run from the repository root:
 
-```bash
-.venv/bin/pip install wasmtime      # developer-only, not a runtime dependency
-.venv/bin/python tools/glon_smoke.py
-```
+- **`tools/glon_smoke.py`** instantiates the real `glon.wasm`, loads the same
+  blocks the browser loads, and drives the Glon event/state logic (no browser
+  needed). It covers init, readiness, the audio/video request markers, URL
+  retention across rerenders, the completion result, and the offline message:
+
+  ```bash
+  .venv/bin/pip install wasmtime      # developer-only, not a runtime dependency
+  .venv/bin/python tools/glon_smoke.py
+  ```
+
+- **`tools/host_bridge_test.js`** runs the **actual** `docs/ytdl-host.js` host
+  bridge against the real `docs/glon.wasm` with a stub DOM/fetch, exercising the
+  real asynchronous path (`click` → `[data-glon-request]` → `fetch` →
+  `resp.json()` → completion event → re-render) for **both** audio and video. It
+  guards the UTF-8 / 200-byte event-value regression that `glon_smoke.py` cannot
+  see. It needs only Node (no npm install, no browser):
+
+  ```bash
+  node tools/host_bridge_test.js
+  ```
 
 ## Notes and limits
 
 - One download at a time; no auth, database, queue, playlists, or WebSockets.
-- No live progress bar; the status line reads `Downloading...` then the result.
-- `glon_event_value` carries at most **200 bytes**, so URLs and status messages
-  are kept short.
+- No live progress bar; the status line reads `Requesting audio download...` /
+  `Requesting video download...`, then the result.
+- **Event-value byte limit.** `glon_event_value` has a hard **200-byte** payload
+  limit. `docs/ytdl-host.js` clamps every host→Glon event value by UTF-8 byte
+  length before it crosses the WASM boundary, and truncation never splits a
+  multibyte character. This is what lets long CJK/emoji filenames and status
+  messages complete; the earlier code-unit-based truncation could exceed 200
+  bytes and drop the event even though the download itself succeeded.
 - The Glon view dialect does not HTML-escape data; this local single-user POC
   does not accept untrusted multi-user input.
 - Prefer MP4: `merge_output_format = "mp4"` remuxes where the codecs allow it
