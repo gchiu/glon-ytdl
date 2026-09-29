@@ -121,8 +121,17 @@ ALLOWED_HOSTS = {
     "youtu.be",
 }
 
-# Audio: best audio-only source stream, then lossily converted to MP3 (192 kbps)
-# by ffmpeg.  The source WebM/Opus/M4A is deleted after a successful conversion.
+# Audio, preferred path: download an AAC/mp4a (m4a) stream directly and keep it.
+# yt-dlp's automatic FFmpegFixupM4a only stream-copies the DASH container, so
+# no audio is transcoded.  The -drc variants are excluded first so the ordinary
+# AAC-LC stream (normally format 140) wins; the second alternative keeps a DRC
+# AAC usable if that is all that exists.
+AAC_AUDIO_FORMAT = (
+    "bestaudio[acodec^=mp4a][format_id!*=-drc]/bestaudio[acodec^=mp4a]"
+)
+# Audio, fallback path (used only when no AAC/mp4a stream is offered): best
+# audio-only source stream, then lossily converted to MP3 (192 kbps) by ffmpeg;
+# the source WebM/Opus/M4A is deleted after a successful conversion.
 AUDIO_FORMAT = "bestaudio"
 AUDIO_POSTPROCESSORS = [
     {
@@ -206,6 +215,27 @@ def video_transcoded(info: dict) -> bool:
     v_ok = bool(vcodecs) and all(c.startswith(("avc1", "h264")) for c in vcodecs)
     a_ok = bool(acodecs) and all(c.startswith(("mp4a", "aac")) for c in acodecs)
     return not (v_ok and a_ok)
+
+
+def has_aac_audio(url: str) -> bool:
+    """Cheap metadata-only probe: is an AAC/mp4a audio-only stream offered?
+
+    Chooses the native .m4a path over the MP3 fallback.  No media is
+    downloaded here; only the extractor's format list is fetched, so the media
+    itself is still downloaded exactly once (in the real download pass).
+    """
+    try:
+        with yt_dlp.YoutubeDL(
+            {"quiet": True, "no_warnings": True, "noplaylist": True}
+        ) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception:
+        return False
+    return any(
+        f.get("vcodec") in (None, "none")
+        and (f.get("acodec") or "").startswith("mp4a")
+        for f in (info.get("formats") or [])
+    )
 
 
 def is_youtube_url(text: str) -> bool:
@@ -303,6 +333,7 @@ def _progress_hook(d: dict) -> None:
 _POSTPROCESS_PHASES = {
     "Merger": "Merging audio and video...",
     "ExtractAudio": "Converting to MP3...",
+    "FixupM4a": "Finalising M4A...",
     "VideoConvertor": "Converting to compatible MP4...",
     "VideoRemuxer": "Repackaging video...",
     "Metadata": "Writing metadata...",
@@ -354,10 +385,10 @@ def progress():
 def download():
     """Download one URL (the raw request body) into downloads/.
 
-    The mode is an explicit query parameter: ?mode=audio (best audio-only
-    source, converted to MP3) or ?mode=video (H.264/AAC MP4, remuxed when the
-    source allows it and transcoded only when it does not).  Absent mode
-    defaults to video, matching the previous API.
+    The mode is an explicit query parameter: ?mode=audio (native AAC/m4a when
+    offered, otherwise best audio-only source converted to MP3) or ?mode=video
+    (H.264/AAC MP4, remuxed when the source allows it and transcoded only when
+    it does not).  Absent mode defaults to video, matching the previous API.
     """
     url = (request.get_data(as_text=True) or "").strip()
     mode = (request.args.get("mode") or "video").strip().lower()
@@ -370,9 +401,19 @@ def download():
             {"ok": False, "message": "Please paste a valid YouTube URL."}
         )
 
+    if mode == "audio":
+        # Native AAC/m4a when available (no audio transcode); otherwise the
+        # existing bestaudio -> MP3 192 kbps fallback.
+        use_aac = has_aac_audio(url)
+        fmt = AAC_AUDIO_FORMAT if use_aac else AUDIO_FORMAT
+        postprocessors = [] if use_aac else AUDIO_POSTPROCESSORS
+    else:
+        fmt = VIDEO_FORMAT
+        postprocessors = VIDEO_POSTPROCESSORS
+
     _reset_progress(mode)
     ydl_opts = {
-        "format": AUDIO_FORMAT if mode == "audio" else VIDEO_FORMAT,
+        "format": fmt,
         # Truncate the title to 180 UTF-8 BYTES (not characters) so long CJK
         # titles cannot exceed the filesystem's per-name limit, while the
         # Unicode title stays readable and the ID/extension are preserved.
@@ -383,9 +424,7 @@ def download():
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
-        "postprocessors": (
-            AUDIO_POSTPROCESSORS if mode == "audio" else VIDEO_POSTPROCESSORS
-        ),
+        "postprocessors": postprocessors,
         # Feed the in-memory /progress record; quiet/noprogress still fire
         # these hooks (they only suppress console rendering).
         "progress_hooks": [_progress_hook],
