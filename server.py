@@ -38,6 +38,8 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -221,6 +223,101 @@ def tool_version_flag(name: str) -> bool:
     return shutil.which(name) is not None
 
 
+# ---- live download progress ------------------------------------------------
+# One in-memory record for the single download in flight (single-user app).
+# yt-dlp progress_hooks/postprocessor_hooks fill it; GET /progress snapshots it
+# while the synchronous POST /download is still blocking.  A lock keeps the
+# record consistent under Flask's threaded server.
+_progress_lock = threading.Lock()
+_progress = {"active": False, "state": "idle"}
+
+
+def _reset_progress(mode: str) -> None:
+    with _progress_lock:
+        _progress.clear()
+        _progress.update(
+            {
+                "active": True,
+                "mode": mode,
+                "state": "starting",
+                "phase": None,
+                "percent": None,
+                "downloaded_bytes": None,
+                "total_bytes": None,
+                "speed": None,
+                "eta": None,
+                "filename": None,
+                "error": None,
+                "updated": time.time(),
+            }
+        )
+
+
+def _update_progress(**fields) -> None:
+    with _progress_lock:
+        _progress.update(fields)
+        _progress["updated"] = time.time()
+
+
+def _finish_progress(state: str, error: str = None) -> None:
+    _update_progress(
+        active=False, state=state, phase=None, speed=None, eta=None, error=error
+    )
+
+
+def _progress_hook(d: dict) -> None:
+    """yt-dlp download hook: record bytes/percent/speed/ETA per stream."""
+    status = d.get("status")
+    if status == "downloading":
+        total = d.get("total_bytes") or d.get("total_bytes_estimate")
+        downloaded = d.get("downloaded_bytes")
+        percent = None
+        if total and downloaded is not None:
+            percent = 100.0 * downloaded / total
+        elif d.get("fragment_count") and d.get("fragment_index") is not None:
+            percent = 100.0 * d["fragment_index"] / d["fragment_count"]
+        _update_progress(
+            state="downloading",
+            phase=None,
+            percent=percent,
+            downloaded_bytes=downloaded,
+            total_bytes=total,
+            speed=d.get("speed"),
+            eta=d.get("eta"),
+            filename=os.path.basename(d.get("filename") or "") or None,
+        )
+    elif status == "finished":
+        _update_progress(
+            state="postprocessing",
+            phase="Processing...",
+            percent=100.0,
+            speed=None,
+            eta=None,
+        )
+    elif status == "error":
+        _update_progress(state="error", error="Download error")
+
+
+# yt-dlp postprocessor_hooks name the PP class without the "FFmpeg" prefix
+# (PostProcessor.pp_key), e.g. FFmpegMergerPP -> "Merger".
+_POSTPROCESS_PHASES = {
+    "Merger": "Merging audio and video...",
+    "ExtractAudio": "Converting to MP3...",
+    "VideoConvertor": "Converting to compatible MP4...",
+    "VideoRemuxer": "Repackaging video...",
+    "Metadata": "Writing metadata...",
+}
+
+
+def _postprocessor_hook(d: dict) -> None:
+    """yt-dlp postprocessor hook: expose the current postprocessing phase."""
+    if d.get("status") != "started":
+        return
+    phase = _POSTPROCESS_PHASES.get(d.get("postprocessor") or "")
+    if phase:
+        _update_progress(state="postprocessing", phase=phase, speed=None, eta=None)
+
+
 @app.get("/")
 def index():
     return send_from_directory(WEB, "index.html")
@@ -246,6 +343,13 @@ def status():
     )
 
 
+@app.get("/progress")
+def progress():
+    """Snapshot the in-flight download's progress (single record)."""
+    with _progress_lock:
+        return jsonify(dict(_progress))
+
+
 @app.post("/download")
 def download():
     """Download one URL (the raw request body) into downloads/.
@@ -266,6 +370,7 @@ def download():
             {"ok": False, "message": "Please paste a valid YouTube URL."}
         )
 
+    _reset_progress(mode)
     ydl_opts = {
         "format": AUDIO_FORMAT if mode == "audio" else VIDEO_FORMAT,
         # Truncate the title to 180 UTF-8 BYTES (not characters) so long CJK
@@ -281,6 +386,10 @@ def download():
         "postprocessors": (
             AUDIO_POSTPROCESSORS if mode == "audio" else VIDEO_POSTPROCESSORS
         ),
+        # Feed the in-memory /progress record; quiet/noprogress still fire
+        # these hooks (they only suppress console rendering).
+        "progress_hooks": [_progress_hook],
+        "postprocessor_hooks": [_postprocessor_hook],
     }
 
     try:
@@ -322,6 +431,7 @@ def download():
                 f"{duration}; formats {info.get('format_id', '?')}; {transcode}"
             )
 
+        _finish_progress("done")
         return jsonify(
             {
                 "ok": True,
@@ -332,10 +442,12 @@ def download():
 
     except yt_dlp.utils.DownloadError as exc:
         # yt-dlp error text can be long; the page has a 200-byte display cap.
+        _finish_progress("error", str(exc)[:120])
         return jsonify(
             {"ok": False, "message": f"{mode.capitalize()} download failed: {str(exc)[:120]}"}
         )
     except Exception as exc:  # pragma: no cover - defensive
+        _finish_progress("error", str(exc)[:120])
         return jsonify({"ok": False, "message": f"{mode.capitalize()} error: {str(exc)[:120]}"})
 
 

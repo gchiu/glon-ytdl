@@ -371,6 +371,7 @@ emit-product-at: func [items i n] [
 
 
 
+
 [
 status-text: "Ready"
 ready-line: none
@@ -474,24 +475,29 @@ do-event: [
                 pending-url: ""
                 render-current
             ] [
-                either = current-event 'readiness [
-                    ready-line: current-value
+                either = current-event 'download-progress [
+                    status-text: current-value
                     render-current
                 ] [
-                    either = current-event 'ready-failed [
+                    either = current-event 'readiness [
                         ready-line: current-value
                         render-current
                     ] [
-                        either = current-event 'paste-url [
-                            url-text: current-value
-                            error-text: none
+                        either = current-event 'ready-failed [
+                            ready-line: current-value
                             render-current
                         ] [
-                            either = current-event 'paste-failed [
-                                error-text: current-value
+                            either = current-event 'paste-url [
+                                url-text: current-value
+                                error-text: none
                                 render-current
                             ] [
-                                render-current
+                                either = current-event 'paste-failed [
+                                    error-text: current-value
+                                    render-current
+                                ] [
+                                    render-current
+                                ]
                             ]
                         ]
                     ]

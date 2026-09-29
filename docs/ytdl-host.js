@@ -11,6 +11,8 @@
  *     text as the event value;
  *   - perform a rendered [data-glon-request] marker as a request to the
  *     explicit local API origin and deliver the reply as an event;
+ *   - poll <api>/progress about once a second while a download request is in
+ *     flight and deliver a formatted progress line as an event;
  *   - fetch <api>/status once at boot and deliver it as readiness.
  *
  * The API origin is explicit (never assumed same-origin), because the page is
@@ -126,6 +128,7 @@
     var event = el.getAttribute("data-glon-request-event") || "request-done";
     var body = (el.textContent || "").trim();
 
+    startProgress();
     fetch(apiUrl(path), {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=UTF-8" },
@@ -138,11 +141,13 @@
       })
       .then(function (data) {
         requestActive = false;
+        stopProgress();
         var message = data && data.message ? data.message : "Done";
         glonEventValue(event, message);
       })
       .catch(function () {
         requestActive = false;
+        stopProgress();
         glonEventValue(event, OFFLINE_MESSAGE);
       });
   }
@@ -164,6 +169,81 @@
         glonEventValue(failEvent, "Could not read the clipboard (permission denied).");
       }
     );
+  }
+
+  /* ---- download progress polling ---------------------------------------
+   * While a /download POST is in flight, poll GET /progress about once a
+   * second and hand Glon a formatted, human-readable status line.  Glon owns
+   * the rendered state; this file only turns numbers into text. */
+  var progressTimer = null;
+  var progressGen = 0;
+
+  function formatBytes(n) {
+    if (typeof n !== "number" || !isFinite(n) || n < 0) return null;
+    var units = ["B", "KB", "MB", "GB", "TB"];
+    var i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    var text = (i === 0 || n >= 100) ? String(Math.round(n)) : n.toFixed(1);
+    return text + " " + units[i];
+  }
+
+  function formatEta(seconds) {
+    if (typeof seconds !== "number" || !isFinite(seconds) || seconds < 0) return null;
+    var total = Math.round(seconds);
+    var h = Math.floor(total / 3600);
+    var m = Math.floor((total % 3600) / 60);
+    var s = total % 60;
+    function pad(v) { return (v < 10 ? "0" : "") + v; }
+    return (h > 0 ? h + ":" + pad(m) : String(m)) + ":" + pad(s);
+  }
+
+  function formatProgress(p) {
+    if (!p || typeof p !== "object") return "";
+    if (p.state === "error") return p.error || "Download failed.";
+    if (p.phase) return p.phase;
+    if (p.state === "postprocessing") return "Postprocessing...";
+    if (p.state !== "downloading") return p.active ? "Starting download..." : "";
+
+    var line = "Downloading " + (p.mode || "download") + "...";
+    if (typeof p.percent === "number" && isFinite(p.percent)) {
+      line += " " + Math.floor(p.percent) + "%";
+    }
+    var lines = [line];
+
+    var got = formatBytes(p.downloaded_bytes);
+    var total = formatBytes(p.total_bytes);
+    if (got && total) lines.push(got + " / " + total);
+    else if (got) lines.push(got);
+
+    var speed = formatBytes(p.speed);
+    if (speed) lines.push(speed + "/s");
+
+    var eta = formatEta(p.eta);
+    if (eta) lines.push("ETA " + eta);
+
+    return lines.join("\n");
+  }
+
+  function stopProgress() {
+    progressGen++;
+    if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+  }
+
+  function startProgress() {
+    stopProgress();
+    var gen = progressGen;
+    function tick() {
+      fetch(API + "/progress")
+        .then(function (resp) { return resp.json(); })
+        .then(function (p) {
+          if (gen !== progressGen || !requestActive) return;
+          var text = formatProgress(p);
+          if (text) glonEventValue("download-progress", text);
+        })
+        .catch(function () { /* transient; keep polling */ });
+    }
+    tick();
+    progressTimer = setInterval(tick, 1000);
   }
 
   function checkStatus() {

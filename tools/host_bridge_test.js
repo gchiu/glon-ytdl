@@ -43,9 +43,10 @@ const MESSAGES = {
 let currentHtml = "";
 const listeners = {};
 
+const renders = [];
 const appEl = {
   get innerHTML() { return currentHtml; },
-  set innerHTML(v) { currentHtml = v; },
+  set innerHTML(v) { currentHtml = v; renders.push(v); },
 };
 
 function requestEl() {
@@ -83,8 +84,13 @@ const documentShim = {
   addEventListener(type, fn) { listeners[type] = fn; },
 };
 
-/* ---- fetch shim: wasm bytes, /status, and the download completion ------- */
+/* ---- fetch shim: wasm bytes, /status, /progress, and /download ---------- */
 let downloadCalls = [];
+let progressCalls = 0;
+let progressSeq = [];
+let downloadDelayMs = 20;
+let downloadFail = false;
+
 function fetchShim(url) {
   const u = String(url);
   if (u.indexOf("glon.wasm") !== -1) {
@@ -94,11 +100,20 @@ function fetchShim(url) {
     return Promise.resolve({ json: () => Promise.resolve(
       { yt_dlp: "2026.08.19", ffmpeg: true, ffprobe: true, deno: false }) });
   }
+  if (/\/progress$/.test(u)) {
+    const snapshot = progressSeq.length
+      ? progressSeq[Math.min(progressCalls, progressSeq.length - 1)]
+      : {};
+    progressCalls++;
+    return Promise.resolve({ json: () => Promise.resolve(snapshot) });
+  }
   const mode = (u.match(/[?&]mode=(\w+)/) || [])[1] || "video";
   downloadCalls.push(mode);
   return new Promise((resolve) => setTimeout(() => resolve({
-    json: () => Promise.resolve({ ok: true, message: MESSAGES[mode] }),
-  }), 20));
+    json: () => Promise.resolve(downloadFail
+      ? { ok: false, message: mode + " download failed: boom" }
+      : { ok: true, message: MESSAGES[mode] }),
+  }), downloadDelayMs));
 }
 
 /* ---- globals the host expects ------------------------------------------- */
@@ -135,6 +150,14 @@ vm.runInThisContext(fs.readFileSync(path.join(BASE, "docs", "ytdl-host.js"), "ut
   { filename: "ytdl-host.js" });
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+async function waitFor(pred, timeout) {
+  const end = Date.now() + (timeout || 5000);
+  while (Date.now() < end) {
+    if (pred()) return true;
+    await sleep(25);
+  }
+  return pred();
+}
 function statusOf(html) {
   const m = html.match(/<div class='status'>([\s\S]*?)<\/div>/);
   return m ? m[1] : "";
@@ -213,32 +236,101 @@ const PASTE_BUTTON = { clipboard: true, error: "paste-failed" };
   clipboard.denied = false;
   console.log("[paste] failure kept URL and reported:", JSON.stringify(errorOf(currentHtml).slice(0, 60)));
 
-  // 4+6. Download buttons still work; the pasted URL survives each rerender.
+  // 4+6. Download buttons still work; the pasted URL survives each rerender;
+  // progress and postprocessing phases are delivered while the request runs.
+  const progressPhase = { audio: "Converting to MP3...", video: "Merging audio and video..." };
+  const progressLine = {
+    audio: "Downloading audio... 37%",
+    video: "Downloading video... 37%",
+  };
   for (const mode of ["audio", "video"]) {
+    renders.length = 0;
+    progressCalls = 0;
+    downloadDelayMs = 3200;
+    progressSeq = [
+      { active: true, mode: mode, state: "downloading", percent: 37,
+        downloaded_bytes: 432013312, total_bytes: 1181116006,
+        speed: 19300000, eta: 2537 },
+      { active: true, mode: mode, state: "downloading",
+        downloaded_bytes: 12345678, total_bytes: null, speed: null, eta: null },
+      { active: true, mode: mode, state: "postprocessing", percent: 100,
+        phase: progressPhase[mode] },
+    ];
+
     fireClick(eventButton("download-" + mode, { input: "download" }));
 
     const pending = statusOf(currentHtml);
     if (pending.indexOf("Requesting " + mode) !== 0) {
       throw new Error("expected 'Requesting " + mode + "...' after click, got: " + pending);
     }
-    await sleep(200); // let the download fetch resolve and dispatch download-done
 
-    const status = statusOf(currentHtml);
-    console.log("[" + mode + "] status:", JSON.stringify(status.slice(0, 70)));
-    if (status.indexOf("Saved " + mode) !== 0) {
-      throw new Error(mode + " completion did not reach Glon; status=" + JSON.stringify(status));
+    const done = await waitFor(
+      () => statusOf(currentHtml).indexOf("Saved " + mode) === 0, 8000);
+    if (!done) {
+      throw new Error(mode + " completion did not reach Glon; status=" + JSON.stringify(statusOf(currentHtml)));
+    }
+
+    const sawPercent = renders.some(
+      (h) => statusOf(h).indexOf(progressLine[mode]) === 0 && h.indexOf("412 MB / 1.1 GB") !== -1);
+    if (!sawPercent) {
+      throw new Error(mode + " percent/bytes progress never rendered; got " +
+        JSON.stringify(renders.map(statusOf).filter(Boolean).slice(-6)));
+    }
+    const sawUnknown = renders.some((h) => {
+      const s = statusOf(h);
+      return s.indexOf("Downloading " + mode + "...") === 0
+        && s.indexOf(" / ") === -1;
+    });
+    if (!sawUnknown) {
+      throw new Error(mode + " unknown-total progress did not render");
+    }
+    if (renders.some((h) => /NaN|undefined/.test(statusOf(h)))) {
+      throw new Error(mode + " progress produced NaN/undefined");
+    }
+    if (!renders.some((h) => statusOf(h).indexOf(progressPhase[mode]) === 0)) {
+      throw new Error(mode + " postprocessing phase never rendered");
     }
     if (currentHtml.indexOf("value='" + URL + "'") === -1) {
       throw new Error("URL was not retained after " + mode + " completion");
     }
     if (errors.length) throw new Error("host reported errors: " + errors.join(" | "));
+
+    // 6. Polling stops on success.
+    const callsAtFinish = progressCalls;
+    await sleep(1300);
+    if (progressCalls !== callsAtFinish) {
+      throw new Error("progress polling continued after " + mode + " finished");
+    }
+    console.log("[" + mode + "] progress+phase delivered; polling stopped (" + progressCalls + " polls)");
   }
+
+  // 7. Polling stops on failure, and the failure message reaches Glon.
+  downloadFail = true;
+  downloadDelayMs = 1200;
+  renders.length = 0;
+  progressCalls = 0;
+  progressSeq = [{ active: true, mode: "video", state: "downloading", percent: 10,
+    downloaded_bytes: 1000, total_bytes: 10000, speed: 500, eta: 18 }];
+  fireClick(eventButton("download-video", { input: "download" }));
+  const failed = await waitFor(
+    () => statusOf(currentHtml).indexOf("download failed") !== -1, 4000);
+  if (!failed) {
+    throw new Error("failure message did not reach Glon; status=" + JSON.stringify(statusOf(currentHtml)));
+  }
+  const callsAtFail = progressCalls;
+  await sleep(1300);
+  if (progressCalls !== callsAtFail) {
+    throw new Error("progress polling continued after a failed download");
+  }
+  console.log("[failure] polling stopped (" + progressCalls + " polls); status:",
+    JSON.stringify(statusOf(currentHtml).slice(0, 60)));
+  downloadFail = false;
 
   console.log("download fetches:", JSON.stringify(downloadCalls));
   console.log("host errors:", errors.length ? errors : "none");
-  if (downloadCalls.join(",") !== "audio,video") {
+  if (downloadCalls.join(",") !== "audio,video,video") {
     throw new Error("unexpected download fetch sequence: " + downloadCalls.join(","));
   }
 
-  console.log("HOST_BRIDGE_TEST PASS (paste fill/replace/trim/failure + audio+video async completion + URL retention)");
+  console.log("HOST_BRIDGE_TEST PASS (paste + progress/phase/poll-stop + audio+video completion + URL retention)");
 })().catch((e) => { console.error("HOST_BRIDGE_TEST FAIL: " + e.message); process.exit(1); });

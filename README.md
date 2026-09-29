@@ -120,11 +120,45 @@ YouTube changes frequently; keep yt-dlp current:
 |--------|-------------|---------|
 | `GET`  | `/`         | The Glon page (`docs/index.html`) |
 | `GET`  | `/status`   | `{"yt_dlp": "...", "ffmpeg": bool, "ffprobe": bool, "deno": bool}` |
+| `GET`  | `/progress` | Live snapshot of the download in flight (see below) |
 | `POST` | `/download?mode=audio` | Best audio source, converted to MP3 (192 kbps) |
 | `POST` | `/download?mode=video` | Best H.264/AAC MP4 (remuxed when possible, otherwise transcoded) |
 
 The `POST` body is one YouTube URL. `mode` defaults to `video` if omitted, so
 the previous single-purpose API still works.
+
+### Live progress
+
+`POST /download` is synchronous, so the page polls `GET /progress` (about once a
+second) while the request is in flight and stops as soon as it returns. The
+server keeps one in-memory record for the single download (no DB, no queue);
+`progress_hooks` fill the byte/percent/speed/ETA fields and
+`postprocessor_hooks` set the phase. The shape is:
+
+```json
+{
+  "active": true,
+  "mode": "video",
+  "state": "downloading",
+  "phase": null,
+  "percent": 37.0,
+  "downloaded_bytes": 432013312,
+  "total_bytes": 1181116006,
+  "speed": 19300000,
+  "eta": 2537,
+  "filename": "clip [id].f137.mp4",
+  "error": null,
+  "updated": 1727680000.0
+}
+```
+
+`state` is one of `idle`, `starting`, `downloading`, `postprocessing`, `done`,
+or `error`. Unknown totals leave `percent`/`total_bytes` as `null` (fragmented
+downloads fall back to `fragment_index`/`fragment_count`). `phase` carries the
+postprocessing message (`Merging audio and video...`, `Converting to MP3...`,
+`Converting to compatible MP4...`, …) and is `null` while downloading. The host
+formats the record into text and delivers it to Glon as the `download-progress`
+event; the final `download-done` message is unchanged.
 
 yt-dlp options per mode:
 
@@ -226,7 +260,7 @@ sibling `rebol-substrate-experiment` repository
 | `glon/common.glon` | Vendored view dialect + string primitives (`emit-*`, `button`, `str-eq`, `mk-string`) from `rebol-substrate-experiment/demo/shop/common.glon` |
 | `glon/app.glon` | This application: URL/status/readiness state, the view, and the event dispatcher |
 | `docs/glon.wasm` | Vendored G1A runtime from `rebol-substrate-experiment/demo/shop/glon.wasm` (exports `glon_init/load/route/event/event_value`) |
-| `docs/ytdl-host.js` | Browser host bridge: loads the blocks, writes rendered HTML, forwards events, reads the clipboard for a `[data-glon-clipboard]` control, performs the rendered request against the explicit API origin, fetches `<api>/status` |
+| `docs/ytdl-host.js` | Browser host bridge: loads the blocks, writes rendered HTML, forwards events, reads the clipboard for a `[data-glon-clipboard]` control, performs the rendered request against the explicit API origin, polls `<api>/progress` while a download runs, fetches `<api>/status` |
 | `docs/index.html` | Generated bundle (do not edit by hand) |
 | `docs/.nojekyll` | Disables Jekyll on GitHub Pages |
 | `build_page.py` | Bundles `glon/*.glon` into `docs/index.html` |
@@ -239,7 +273,11 @@ How the download request crosses the boundary, without any app logic in JS:
    `<span data-glon-request='/download' data-glon-request-event='download-done'>URL</span>`
 2. The host turns the marker into `POST <api>/download?mode=audio|video` and,
    when the reply arrives, calls `glon_event_value('download-done', message)`.
-3. Glon decides what the result means and re-renders.
+3. While the POST is pending the host polls `GET <api>/progress` about once a
+   second, formats the record into text, and calls
+   `glon_event_value('download-progress', text)`; polling stops when the POST
+   resolves (success or failure). Glon remains the owner of rendered state.
+4. Glon decides what the result means and re-renders.
 
 A second capability crosses the same boundary, again with no app logic in JS.
 The Paste button renders
@@ -264,8 +302,9 @@ Two complementary tests, both run from the repository root:
 - **`tools/glon_smoke.py`** instantiates the real `glon.wasm`, loads the same
   blocks the browser loads, and drives the Glon event/state logic (no browser
   needed). It covers init, readiness, paste fill/replace/failure, the audio/video
-  request markers, URL retention across rerenders, the completion result, and
-  the offline message:
+  request markers, live `download-progress` rendering (known and unknown totals,
+  postprocessing phase), URL retention across rerenders, the completion result,
+  and the offline message:
 
   ```bash
   .venv/bin/pip install wasmtime      # developer-only, not a runtime dependency
@@ -275,7 +314,9 @@ Two complementary tests, both run from the repository root:
 - **`tools/host_bridge_test.js`** runs the **actual** `docs/ytdl-host.js` host
   bridge against the real `docs/glon.wasm` with a stub DOM/fetch, exercising the
   real asynchronous path (`click` → `[data-glon-request]` → `fetch` →
-  `resp.json()` → completion event → re-render) for **both** audio and video. It
+  `resp.json()` → completion event → re-render) for **both** audio and video,
+  plus the `/progress` polling path (percent/bytes/speed/ETA, postprocessing
+  phase, unknown totals), and that polling stops on success and on failure. It
   guards the UTF-8 / 200-byte event-value regression that `glon_smoke.py` cannot
   see. It needs only Node (no npm install, no browser):
 
@@ -286,8 +327,10 @@ Two complementary tests, both run from the repository root:
 ## Notes and limits
 
 - One download at a time; no auth, database, queue, playlists, or WebSockets.
-- No live progress bar; the status line reads `Requesting audio download...` /
-  `Requesting video download...`, then the result.
+- The status line reads `Requesting audio download...` / `Requesting video
+  download...`, then live progress (percent, bytes, speed, ETA) and the
+  postprocessing phase, then the final result. Progress is a polled in-memory
+  snapshot, not a streamed progress bar.
 - **Event-value byte limit.** `glon_event_value` has a hard **200-byte** payload
   limit. `docs/ytdl-host.js` clamps every host→Glon event value by UTF-8 byte
   length before it crosses the WASM boundary, and truncation never splits a

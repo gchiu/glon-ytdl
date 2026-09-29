@@ -163,6 +163,26 @@ check("download-video", page, "Requesting video download...",
       "data-glon-request-event='download-done'", url)
 check_url("download-video retains url", page, url)
 
+# Live progress (multiline) renders into the status line while the request is
+# still pending, and the request marker must remain so polling continues.
+page = event_value(
+    "download-progress",
+    "Downloading video... 37%\n412 MB / 1.1 GB\n18.4 MB/s\nETA 42:17",
+)
+check("download-progress", page, "Downloading video... 37%",
+      "412 MB / 1.1 GB", "18.4 MB/s", "ETA 42:17")
+check_url("download-progress retains url", page, url)
+if "data-glon-request" not in page:
+    sys.exit("FAIL download-progress: pending request marker disappeared")
+
+# A progress line with no totals/percent still renders (unknown total).
+page = event_value("download-progress", "Downloading audio...")
+check("download-progress unknown total", page, "Downloading audio...")
+
+# Postprocessing phase text is shown too.
+page = event_value("download-progress", "Converting to MP3...")
+check("download-progress phase", page, "Converting to MP3...")
+
 page = event_value("download-done", "Saved audio: clip [abcdefghijk].webm")
 check("download-done", page, "Saved audio: clip [abcdefghijk].webm")
 check_url("download-done retains url", page, url)
