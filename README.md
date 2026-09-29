@@ -120,19 +120,29 @@ YouTube changes frequently; keep yt-dlp current:
 |--------|-------------|---------|
 | `GET`  | `/`         | The Glon page (`docs/index.html`) |
 | `GET`  | `/status`   | `{"yt_dlp": "...", "ffmpeg": bool, "ffprobe": bool, "deno": bool}` |
-| `POST` | `/download?mode=audio` | Best audio-only stream, preserved as-is (no transcode) |
-| `POST` | `/download?mode=video` | Best video + audio, merged to MP4 where possible |
+| `POST` | `/download?mode=audio` | Best audio source, converted to MP3 (192 kbps) |
+| `POST` | `/download?mode=video` | Best H.264/AAC MP4 (remuxed when possible, otherwise transcoded) |
 
 The `POST` body is one YouTube URL. `mode` defaults to `video` if omitted, so
 the previous single-purpose API still works.
 
 yt-dlp options per mode:
 
-- **audio** — `format = "bestaudio"`: the best audio-only stream, downloaded
-  unchanged (e.g. Opus/WebM), so the source codec/quality is preserved and no
-  lossy transcode or ffmpeg step is needed.
-- **video** — `format = "bv*+ba/b"` with `merge_output_format = "mp4"`: best
-  video + best audio, merged to MP4 where the codecs permit a remux.
+- **audio** — `format = "bestaudio"` plus an `FFmpegExtractAudio` postprocessor
+  (`preferredcodec = "mp3"`, `preferredquality = "192"`): the best audio source
+  is downloaded and converted to MP3; the intermediate WebM/Opus/M4A source is
+  deleted after a successful conversion. The reply reports the actual container,
+  codec, bitrate and duration.
+- **video** — `format = "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/bv*+ba/b"`: prefer
+  H.264/AVC + AAC, which yt-dlp merges (a lossless remux) into MP4. An
+  `FFmpegVideoConvertor` postprocessor (`preferedformat = "mp4"`) guarantees the
+  result is H.264/AAC MP4; it skips files already in MP4, so transcoding happens
+  only when no compatible source streams exist. The reply reports the selected
+  format ids, actual codecs/container, and whether a transcode was required.
+
+After a successful download the reply message reports the actual result, probed
+with `ffprobe` (e.g. `Saved video: clip [id].mp4 [mp4, h264+aac, 218.9s;
+formats 299+140; no transcode]`).
 
 Only `youtube.com` / `youtu.be` hosts are accepted. The request body is parsed
 strictly as a URL: yt-dlp is driven through its **Python API**, never a shell,
@@ -275,8 +285,9 @@ Two complementary tests, both run from the repository root:
   bytes and drop the event even though the download itself succeeded.
 - The Glon view dialect does not HTML-escape data; this local single-user POC
   does not accept untrusted multi-user input.
-- Prefer MP4: `merge_output_format = "mp4"` remuxes where the codecs allow it
-  and deliberately does **not** transcode to force MP4.
+- Compatibility first: audio is always MP3 and video is always H.264/AAC MP4.
+  Compatible source streams are remuxed without re-encoding; transcoding only
+  happens when YouTube does not offer them.
 
 ## Legal
 

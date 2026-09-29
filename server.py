@@ -12,7 +12,7 @@ The server is deliberately small:
           yt-dlp (Python API)
             |
             v
-          ffmpeg (merge / remux)
+          ffmpeg / ffprobe (merge / remux / convert / report)
             |
             v
         downloads/
@@ -33,8 +33,10 @@ Security choices:
   * CORS is limited to the GitHub Pages origin plus localhost dev origins.
 """
 
+import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -117,12 +119,91 @@ ALLOWED_HOSTS = {
     "youtu.be",
 }
 
-# Video: best video + best audio, merged into MP4 where the codecs permit a
-# remux.  yt-dlp falls back to a single combined stream.
-VIDEO_FORMAT = "bv*+ba/b"
-# Audio: the best audio-only stream, downloaded as-is so the source codec and
-# quality are preserved with no lossy transcode and no ffmpeg step.
+# Audio: best audio-only source stream, then lossily converted to MP3 (192 kbps)
+# by ffmpeg.  The source WebM/Opus/M4A is deleted after a successful conversion.
 AUDIO_FORMAT = "bestaudio"
+AUDIO_POSTPROCESSORS = [
+    {
+        "key": "FFmpegExtractAudio",
+        "preferredcodec": "mp3",
+        "preferredquality": "192",
+    }
+]
+
+# Video: prefer H.264/AVC + AAC -- codecs every ordinary player supports.  When
+# YouTube offers them the two streams are merged (a lossless remux) into MP4.
+# Otherwise the best streams are fetched and FFmpegVideoConvertor transcodes
+# them to H.264/AAC MP4 so the compatibility contract always holds.
+VIDEO_FORMAT = "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/bv*+ba/b"
+VIDEO_POSTPROCESSORS = [
+    {
+        "key": "FFmpegVideoConvertor",
+        "preferedformat": "mp4",
+    }
+]
+
+
+def probe_media(path: str) -> dict:
+    """Describe a finished file with ffprobe (container, codecs, bitrate)."""
+    try:
+        completed = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries",
+                "format=format_name,duration,bit_rate:"
+                "stream=codec_type,codec_name",
+                "-of", "json", str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return json.loads(completed.stdout or "{}")
+    except Exception:
+        return {}
+
+
+def describe_media(path: str) -> dict:
+    """Summarise ffprobe output as container / vcodec / acodec / duration."""
+    data = probe_media(path)
+    fmt = data.get("format") or {}
+    streams = data.get("streams") or []
+    seconds = None
+    try:
+        seconds = float(fmt.get("duration"))
+    except (TypeError, ValueError):
+        pass
+    names = (fmt.get("format_name") or "?").split(",")
+    suffix = Path(path).suffix.lstrip(".").lower()
+    return {
+        "container": suffix if suffix in names else names[0],
+        "vcodec": next(
+            (s.get("codec_name") for s in streams
+             if s.get("codec_type") == "video"), None),
+        "acodec": next(
+            (s.get("codec_name") for s in streams
+             if s.get("codec_type") == "audio"), None),
+        "duration": seconds,
+        "bit_rate": fmt.get("bit_rate"),
+    }
+
+
+def video_transcoded(info: dict) -> bool:
+    """True when the selected streams were not already H.264/AAC."""
+    formats = info.get("requested_formats") or []
+    if not formats:
+        return False
+    vcodecs = [
+        f.get("vcodec") for f in formats
+        if f.get("vcodec") not in (None, "none")
+    ]
+    acodecs = [
+        f.get("acodec") for f in formats
+        if f.get("acodec") not in (None, "none")
+    ]
+    v_ok = bool(vcodecs) and all(c.startswith(("avc1", "h264")) for c in vcodecs)
+    a_ok = bool(acodecs) and all(c.startswith(("mp4a", "aac")) for c in acodecs)
+    return not (v_ok and a_ok)
 
 
 def is_youtube_url(text: str) -> bool:
@@ -170,8 +251,9 @@ def download():
     """Download one URL (the raw request body) into downloads/.
 
     The mode is an explicit query parameter: ?mode=audio (best audio-only
-    stream, preserved as-is) or ?mode=video (the existing best video+audio
-    merge).  Absent mode defaults to video, matching the previous API.
+    source, converted to MP3) or ?mode=video (H.264/AAC MP4, remuxed when the
+    source allows it and transcoded only when it does not).  Absent mode
+    defaults to video, matching the previous API.
     """
     url = (request.get_data(as_text=True) or "").strip()
     mode = (request.args.get("mode") or "video").strip().lower()
@@ -191,9 +273,10 @@ def download():
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
+        "postprocessors": (
+            AUDIO_POSTPROCESSORS if mode == "audio" else VIDEO_POSTPROCESSORS
+        ),
     }
-    if mode == "video":
-        ydl_opts["merge_output_format"] = "mp4"
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -207,8 +290,39 @@ def download():
             path = ydl.prepare_filename(info)
 
         name = os.path.basename(path) if path else "download"
+        media = describe_media(path) if path else {}
+
+        if mode == "audio":
+            try:
+                bitrate = f", {int(media['bit_rate']) // 1000} kbps"
+            except (KeyError, TypeError, ValueError):
+                bitrate = ""
+            duration = (
+                f", {media['duration']:.1f}s"
+                if media.get("duration") is not None else ""
+            )
+            report = (
+                f"{media.get('container', '?')}, "
+                f"{media.get('acodec', '?')}{bitrate}{duration}"
+            )
+        else:
+            duration = (
+                f", {media['duration']:.1f}s"
+                if media.get("duration") is not None else ""
+            )
+            transcode = "transcoded" if video_transcoded(info) else "no transcode"
+            report = (
+                f"{media.get('container', '?')}, "
+                f"{media.get('vcodec', '?')}+{media.get('acodec', '?')}"
+                f"{duration}; formats {info.get('format_id', '?')}; {transcode}"
+            )
+
         return jsonify(
-            {"ok": True, "message": f"Saved {mode}: {name}", "file": name}
+            {
+                "ok": True,
+                "message": f"Saved {mode}: {name} [{report}]",
+                "file": name,
+            }
         )
 
     except yt_dlp.utils.DownloadError as exc:
