@@ -268,7 +268,12 @@ def download():
 
     ydl_opts = {
         "format": AUDIO_FORMAT if mode == "audio" else VIDEO_FORMAT,
-        "outtmpl": str(DOWNLOADS / "%(title)s [%(id)s].%(ext)s"),
+        # Truncate the title to 180 UTF-8 BYTES (not characters) so long CJK
+        # titles cannot exceed the filesystem's per-name limit, while the
+        # Unicode title stays readable and the ID/extension are preserved.
+        # yt-dlp's "B" precision cuts on a byte boundary and discards any
+        # split multibyte tail (decode with "ignore").
+        "outtmpl": str(DOWNLOADS / "%(title).180B [%(id)s].%(ext)s"),
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
