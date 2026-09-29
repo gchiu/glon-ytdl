@@ -13,6 +13,8 @@
 ;; Host events (delivered through glon_event / glon_event_value):
 ;;   download-audio  a download was requested in audio mode (value = URL)
 ;;   download-video  a download was requested in video mode (value = URL)
+;;   paste-url       the clipboard text was read (value = clipboard text)
+;;   paste-failed    reading the clipboard failed (value = short reason)
 ;;   readiness       runtime readiness summary text
 ;;   ready-failed    the local service is unreachable (helpful message)
 ;;   download-done   the server's result message
@@ -52,9 +54,15 @@ render-page: [
     ;; Re-emit the current URL as the input's value so a re-render (any event)
     ;; does not discard what the user typed/selected.  url-text is updated from
     ;; an action's event value, and survives success/failure.
+    ;; The Paste button asks the host (a browser capability) to read the
+    ;; clipboard; the resulting value arrives as the paste-url event and
+    ;; replaces url-text, so it survives rerenders.
+    emit-text "<div class='url-row'>"
     emit-text "<input class='url' type='text' placeholder='Paste a YouTube URL' value='"
     emit-text url-text
     emit-text "' data-glon-input='download'>"
+    emit-text "<button class='btn' data-glon-event='paste-url' data-glon-clipboard='true' data-glon-event-error='paste-failed'>Paste</button>"
+    emit-text "</div>"
 
     emit-text "<div class='actions'>"
     mode-button [ emit-text "Download audio" ] "download-audio"
@@ -124,7 +132,18 @@ do-event: [
                         ready-line: current-value
                         render-current
                     ] [
-                        render-current
+                        either = current-event 'paste-url [
+                            url-text: current-value
+                            error-text: none
+                            render-current
+                        ] [
+                            either = current-event 'paste-failed [
+                                error-text: current-value
+                                render-current
+                            ] [
+                                render-current
+                            ]
+                        ]
                     ]
                 ]
             ]

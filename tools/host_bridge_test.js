@@ -27,6 +27,7 @@ if (blocks.length !== 2) throw new Error("expected 2 glon blocks, got " + blocks
 
 /* ---- the long multibyte completion messages (the regression) ----------- */
 const URL = "https://www.youtube.com/watch?v=GJU-ZURx_MA";
+const PASTE_URL = "https://www.youtube.com/watch?v=pasted0001";
 const MESSAGES = {
   audio:
     "Saved audio: 一首“差點被放棄，卻紅遍華語世界”的傳奇作品 " +
@@ -111,6 +112,21 @@ window.location = { search: "" };
 window.YTDL_API = "http://127.0.0.1:8000";
 try { WebAssembly.instantiateStreaming = undefined; } catch (e) { /* ignore */ }
 
+/* ---- clipboard shim (a browser capability the host reads) -------------- */
+const clipboard = { value: "", denied: false };
+Object.defineProperty(global, "navigator", {
+  configurable: true,
+  value: {
+    clipboard: {
+      readText: function () {
+        return clipboard.denied
+          ? Promise.reject(new Error("denied"))
+          : Promise.resolve(clipboard.value);
+      },
+    },
+  },
+});
+
 const errors = [];
 const origError = console.error;
 console.error = (...a) => { errors.push(a.join(" ")); origError(...a); };
@@ -123,25 +139,83 @@ function statusOf(html) {
   const m = html.match(/<div class='status'>([\s\S]*?)<\/div>/);
   return m ? m[1] : "";
 }
+function errorOf(html) {
+  const m = html.match(/<div class='error'>([\s\S]*?)<\/div>/);
+  return m ? m[1] : "";
+}
+
+function fireClick(el) {
+  listeners.click({
+    target: { closest: (s) => (s === "[data-glon-event]" ? el : null) },
+    preventDefault() {},
+  });
+}
+
+/* A clickable [data-glon-event] element with optional data-* attributes. */
+function eventButton(event, attrs) {
+  attrs = attrs || {};
+  return {
+    getAttribute(n) {
+      if (n === "data-glon-event") return event;
+      if (n === "data-glon-input") return attrs.input || null;
+      if (n === "data-glon-value") return Object.prototype.hasOwnProperty.call(attrs, "value") ? attrs.value : null;
+      if (n === "data-glon-event-error") return attrs.error || null;
+      return null;
+    },
+    hasAttribute(n) {
+      if (n === "data-glon-clipboard") return !!attrs.clipboard;
+      if (n === "data-glon-value") return Object.prototype.hasOwnProperty.call(attrs, "value");
+      return false;
+    },
+  };
+}
+
+const PASTE_BUTTON = { clipboard: true, error: "paste-failed" };
 
 (async () => {
   await sleep(150); // boot: wasm load + init + first /status
   if (currentHtml.indexOf("Requesting") !== -1) throw new Error("unexpected pre-click state");
+  if (inputEl().value !== "") throw new Error("expected an empty URL field at boot");
 
-  // seed the input with the URL (as a real user would)
-  currentHtml = currentHtml.replace(/value='[^']*'/, "value='" + URL + "'");
+  // 2. empty field -> Paste fills it; 3. surrounding whitespace is trimmed.
+  clipboard.value = "\n\t  " + PASTE_URL + "  \n";
+  fireClick(eventButton("paste-url", PASTE_BUTTON));
+  await sleep(50);
+  if (inputEl().value !== PASTE_URL) {
+    throw new Error("paste did not fill the empty field with trimmed text; got: " + JSON.stringify(inputEl().value));
+  }
+  if (downloadCalls.length !== 0) throw new Error("paste must not start a download");
+  console.log("[paste] filled trimmed URL:", JSON.stringify(inputEl().value));
 
+  // 1. existing URL present -> Paste replaces it completely.
+  clipboard.value = "   " + URL + "\n";
+  fireClick(eventButton("paste-url", PASTE_BUTTON));
+  await sleep(50);
+  if (inputEl().value !== URL) {
+    throw new Error("paste did not replace the previous value; got: " + JSON.stringify(inputEl().value));
+  }
+  if (currentHtml.indexOf("value='" + PASTE_URL + "'") !== -1) {
+    throw new Error("previous pasted value was not replaced");
+  }
+  if (downloadCalls.length !== 0) throw new Error("paste must not start a download");
+  console.log("[paste] replaced with:", JSON.stringify(inputEl().value));
+
+  // 5. clipboard failure leaves the previous URL intact and reports it.
+  clipboard.denied = true;
+  fireClick(eventButton("paste-url", PASTE_BUTTON));
+  await sleep(50);
+  if (inputEl().value !== URL) {
+    throw new Error("clipboard failure changed the URL; got: " + JSON.stringify(inputEl().value));
+  }
+  if (errorOf(currentHtml).toLowerCase().indexOf("clipboard") === -1) {
+    throw new Error("clipboard failure did not report a message; error=" + JSON.stringify(errorOf(currentHtml)));
+  }
+  clipboard.denied = false;
+  console.log("[paste] failure kept URL and reported:", JSON.stringify(errorOf(currentHtml).slice(0, 60)));
+
+  // 4+6. Download buttons still work; the pasted URL survives each rerender.
   for (const mode of ["audio", "video"]) {
-    const btn = {
-      getAttribute(n) {
-        if (n === "data-glon-event") return "download-" + mode;
-        if (n === "data-glon-input") return "download";
-        return null;
-      },
-      hasAttribute() { return false; },
-    };
-    listeners.click({ target: { closest: (s) => s === "[data-glon-event]" ? btn : null },
-                      preventDefault() {} });
+    fireClick(eventButton("download-" + mode, { input: "download" }));
 
     const pending = statusOf(currentHtml);
     if (pending.indexOf("Requesting " + mode) !== 0) {
@@ -166,5 +240,5 @@ function statusOf(html) {
     throw new Error("unexpected download fetch sequence: " + downloadCalls.join(","));
   }
 
-  console.log("HOST_BRIDGE_TEST PASS (audio+video async completion + URL retention)");
+  console.log("HOST_BRIDGE_TEST PASS (paste fill/replace/trim/failure + audio+video async completion + URL retention)");
 })().catch((e) => { console.error("HOST_BRIDGE_TEST FAIL: " + e.message); process.exit(1); });

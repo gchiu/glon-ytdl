@@ -226,7 +226,7 @@ sibling `rebol-substrate-experiment` repository
 | `glon/common.glon` | Vendored view dialect + string primitives (`emit-*`, `button`, `str-eq`, `mk-string`) from `rebol-substrate-experiment/demo/shop/common.glon` |
 | `glon/app.glon` | This application: URL/status/readiness state, the view, and the event dispatcher |
 | `docs/glon.wasm` | Vendored G1A runtime from `rebol-substrate-experiment/demo/shop/glon.wasm` (exports `glon_init/load/route/event/event_value`) |
-| `docs/ytdl-host.js` | Browser host bridge: loads the blocks, writes rendered HTML, forwards events, performs the rendered request against the explicit API origin, fetches `<api>/status` |
+| `docs/ytdl-host.js` | Browser host bridge: loads the blocks, writes rendered HTML, forwards events, reads the clipboard for a `[data-glon-clipboard]` control, performs the rendered request against the explicit API origin, fetches `<api>/status` |
 | `docs/index.html` | Generated bundle (do not edit by hand) |
 | `docs/.nojekyll` | Disables Jekyll on GitHub Pages |
 | `build_page.py` | Bundles `glon/*.glon` into `docs/index.html` |
@@ -241,6 +241,16 @@ How the download request crosses the boundary, without any app logic in JS:
    when the reply arrives, calls `glon_event_value('download-done', message)`.
 3. Glon decides what the result means and re-renders.
 
+A second capability crosses the same boundary, again with no app logic in JS.
+The Paste button renders
+`<button data-glon-event='paste-url' data-glon-clipboard='true'
+data-glon-event-error='paste-failed'>`. The host reads the clipboard with
+`navigator.clipboard.readText()`, trims surrounding whitespace, and delivers it
+as `glon_event_value('paste-url', text)`; Glon replaces `url-text` (never
+appends and never starts a download), so the value survives rerenders. On
+failure the host sends `paste-failed` with a short reason and Glon leaves the
+URL unchanged. The 200-UTF-8-byte event-value clamp still applies.
+
 Rebuild the generated page after editing the `.glon` source:
 
 ```bash
@@ -253,8 +263,9 @@ Two complementary tests, both run from the repository root:
 
 - **`tools/glon_smoke.py`** instantiates the real `glon.wasm`, loads the same
   blocks the browser loads, and drives the Glon event/state logic (no browser
-  needed). It covers init, readiness, the audio/video request markers, URL
-  retention across rerenders, the completion result, and the offline message:
+  needed). It covers init, readiness, paste fill/replace/failure, the audio/video
+  request markers, URL retention across rerenders, the completion result, and
+  the offline message:
 
   ```bash
   .venv/bin/pip install wasmtime      # developer-only, not a runtime dependency

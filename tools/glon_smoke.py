@@ -128,8 +128,24 @@ check("init", page, "Local YouTube Download", "Paste a YouTube URL",
       "data-glon-input='download'",
       "data-glon-event='download-audio'", "Download audio",
       "data-glon-event='download-video'", "Download video",
+      "data-glon-event='paste-url'", "data-glon-clipboard='true'", "Paste",
       "Checking runtime...")
 check_url("init", page, "")
+
+# Paste: fills an empty field, then completely replaces a previous value, and
+# never starts a download by itself.
+pasted_fill = "https://www.youtube.com/watch?v=pastedfill"
+page = event_value("paste-url", pasted_fill)
+check("paste-url fills empty", page, "data-glon-event='paste-url'")
+check_url("paste-url fills empty", page, pasted_fill)
+if "data-glon-request" in page:
+    sys.exit("FAIL paste-url: must not start a download")
+
+pasted_repl = "https://www.youtube.com/watch?v=pastedrepl"
+page = event_value("paste-url", pasted_repl)
+check_url("paste-url replaces", page, pasted_repl)
+if pasted_fill in page:
+    sys.exit("FAIL paste-url: previous value was not replaced")
 
 page = event_value("readiness", "yt-dlp 2026.08.19  |  ffmpeg  |  ffprobe  |  deno absent")
 check("readiness", page, "yt-dlp 2026.08.19")
@@ -169,5 +185,10 @@ check("ready-failed", page, "Local downloader is not running.",
       ".venv/bin/python server.py")
 check_url("ready-failed retains url", page, url)
 
-print("GLON_SMOKE PASS (init / readiness / url retention / "
+# Clipboard failure shows a short message and leaves the URL untouched.
+page = event_value("paste-failed", "Could not read the clipboard (permission denied).")
+check("paste-failed", page, "Could not read the clipboard (permission denied).")
+check_url("paste-failed keeps url", page, url)
+
+print("GLON_SMOKE PASS (init / readiness / url retention / paste / "
       "audio+video request markers / result / offline)")

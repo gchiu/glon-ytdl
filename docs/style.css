@@ -36,6 +36,11 @@ h1 {
     overflow-wrap: anywhere;
     white-space: pre-line;
 }
+.url-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 12px;
+}
 .url {
     width: 100%;
     padding: 12px 14px;
@@ -43,6 +48,12 @@ h1 {
     font-size: 15px;
     border: 1px solid #d4d4d8;
     border-radius: 10px;
+}
+.url-row .url {
+    width: auto;
+    flex: 1 1 auto;
+    min-width: 0;
+    margin-bottom: 0;
 }
 .url:focus { outline: 2px solid #a1a1aa; }
 .actions {

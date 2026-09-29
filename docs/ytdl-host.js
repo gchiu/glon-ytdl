@@ -7,6 +7,8 @@
  *   - load each <script type="application/glon"> block into the machine;
  *   - write rendered HTML into [data-glon-id="<handle>"];
  *   - forward clicks on [data-glon-event] to glon_event / glon_event_value;
+ *   - read the clipboard for a [data-glon-clipboard] control and deliver the
+ *     text as the event value;
  *   - perform a rendered [data-glon-request] marker as a request to the
  *     explicit local API origin and deliver the reply as an event;
  *   - fetch <api>/status once at boot and deliver it as readiness.
@@ -145,6 +147,25 @@
       });
   }
 
+  /* A [data-glon-clipboard] control asks the host to read the clipboard (a
+   * browser capability Glon cannot perform) and deliver the text as the event
+   * value.  Surrounding whitespace is trimmed; on failure the element's
+   * data-glon-event-error event reports a short reason and Glon keeps state. */
+  function readClipboard(event, failEvent) {
+    if (!navigator.clipboard || typeof navigator.clipboard.readText !== "function") {
+      glonEventValue(failEvent, "Clipboard is not available.");
+      return;
+    }
+    navigator.clipboard.readText().then(
+      function (text) {
+        glonEventValue(event, String(text == null ? "" : text).trim());
+      },
+      function () {
+        glonEventValue(failEvent, "Could not read the clipboard (permission denied).");
+      }
+    );
+  }
+
   function checkStatus() {
     fetch(API + "/status")
       .then(function (resp) { return resp.json(); })
@@ -180,6 +201,13 @@
       if (!el) return;
       e.preventDefault();
       var token = el.getAttribute("data-glon-event");
+      if (el.hasAttribute("data-glon-clipboard")) {
+        readClipboard(
+          token,
+          el.getAttribute("data-glon-event-error") || (token + "-failed")
+        );
+        return;
+      }
       var value = null;
       if (el.hasAttribute("data-glon-value")) {
         value = el.getAttribute("data-glon-value");
